@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Backup do Festival de Calouros: banco + fotos + configuracao.
+set -euo pipefail
+DEST=/var/backups/festival
+CARIMBO=$(date +%Y%m%d-%H%M)
+mkdir -p "$DEST"
+
+mysqldump --single-transaction --routines --triggers festival_v2 \
+  | gzip > "$DEST/db-$CARIMBO.sql.gz"
+
+tar -czf "$DEST/uploads-$CARIMBO.tar.gz" \
+  -C /var/www/festival-v2/public/uploads participants 2>/dev/null || true
+
+cp /var/www/festival-v2/data/db.json "$DEST/dbjson-$CARIMBO.json" 2>/dev/null || true
+
+# Mantem 14 dias. Espaco e barato; perder a apuracao do festival nao e.
+find "$DEST" -type f -mtime +14 -delete
