@@ -1280,16 +1280,13 @@ function enviar_credenciais(
         $url
     );
 
-    $id = wa_enfileirar('credenciais', $nome, $telefone, $texto, $eventoId, $juradoId);
-    if ($id === 0) {
-        return 'Não foi possível registrar o envio.';
-    }
-
-    $r = wa_enviar($id);
+    /* Via dedicada: dispara com o texto real e grava o histórico com a senha
+     * mascarada — ver wa_enviar_credenciais(). */
+    $r = wa_enviar_credenciais($nome, $telefone, $texto, $eventoId, $juradoId);
 
     return $r['ok']
         ? 'Credenciais enviadas por WhatsApp.'
-        : 'Falha ao enviar por WhatsApp (' . $r['erro'] . '). Reenvie em Mensagens.';
+        : 'Falha ao enviar por WhatsApp (' . $r['erro'] . '). Gere uma nova senha para tentar de novo.';
 }
 
 function is_admin(): bool
@@ -3003,17 +3000,30 @@ function render_secao_whatsapp(array $db, int $eventId): void
                         <input name="wa_business_id" value="<?= h($c['wa_business_id'] ?? '') ?>" inputmode="numeric">
                     </label>
 
-                    <label>Access Token
-                        <input name="wa_token" type="password" autocomplete="new-password"
-                               placeholder="<?= wa_tem_token() ? '•••••••• (já configurado — deixe em branco para manter)' : 'cole o token aqui' ?>">
-                    </label>
-                    <p class="dica">
-                        <?php /* O token nunca volta para a tela: o campo mostra apenas se ele
-                                 existe. Se ele fosse devolvido no HTML, bastaria abrir o
-                                 código-fonte da página para copiá-lo. */ ?>
-                        Por segurança o token nunca é exibido de volta.
-                        <?= wa_tem_token() ? 'Há um token gravado.' : 'Nenhum token gravado ainda.' ?>
-                    </p>
+                    <?php if (wa_token_do_ambiente()): ?>
+                        <label>Access Token
+                            <input type="password" value="" placeholder="definido no servidor" disabled>
+                        </label>
+                        <p class="dica">
+                            O token vem de <code>FESTIVAL_WA_TOKEN</code>, definida no servidor.
+                            É a forma mais segura: ele não passa pelo banco e, portanto, não
+                            aparece em backup nem em cópia da base. Para alterá-lo, mude a
+                            variável e recarregue o PHP-FPM.
+                        </p>
+                    <?php else: ?>
+                        <label>Access Token
+                            <input name="wa_token" type="password" autocomplete="new-password"
+                                   placeholder="<?= wa_tem_token() ? '•••••••• (já configurado — deixe em branco para manter)' : 'cole o token aqui' ?>">
+                        </label>
+                        <p class="dica">
+                            <?php /* O token nunca volta para a tela: o campo mostra apenas se ele
+                                     existe. Se ele fosse devolvido no HTML, bastaria abrir o
+                                     código-fonte da página para copiá-lo. */ ?>
+                            Por segurança o token nunca é exibido de volta.
+                            <?= wa_tem_token() ? 'Há um token gravado no banco.' : 'Nenhum token gravado ainda.' ?>
+                            Para não guardá-lo no banco, defina <code>FESTIVAL_WA_TOKEN</code> no servidor.
+                        </p>
+                    <?php endif; ?>
 
                     <label>Versão da API
                         <input name="wa_versao_api" value="<?= h($c['wa_versao_api'] ?? 'v20.0') ?>">
@@ -3159,13 +3169,20 @@ function render_secao_mensagens(array $db, int $eventId): void
                                 <?php endif; ?>
                             </td>
                             <td data-label="Ações" class="table-actions">
-                                <form method="post" class="em-linha">
-                                    <input type="hidden" name="action" value="reenviar_mensagem">
-                                    <input type="hidden" name="mensagem_id" value="<?= (int)$m['id'] ?>">
-                                    <button class="button small" type="submit">
-                                        <?= $m['status'] === 'enviado' ? 'Reenviar' : 'Enviar' ?>
-                                    </button>
-                                </form>
+                                <?php if ($m['tipo'] === 'credenciais'): ?>
+                                    <?php /* Não há reenvio aqui: a senha não fica guardada, então
+                                             o conteúdo original não existe mais. Reenviar exige
+                                             gerar uma nova senha. */ ?>
+                                    <a class="button small" href="?page=dashboard&section=usuarios&event_id=<?= $eventId ?>">Gerar nova senha</a>
+                                <?php else: ?>
+                                    <form method="post" class="em-linha">
+                                        <input type="hidden" name="action" value="reenviar_mensagem">
+                                        <input type="hidden" name="mensagem_id" value="<?= (int)$m['id'] ?>">
+                                        <button class="button small" type="submit">
+                                            <?= $m['status'] === 'enviado' ? 'Reenviar' : 'Enviar' ?>
+                                        </button>
+                                    </form>
+                                <?php endif; ?>
                             </td>
                         </tr>
                     <?php endforeach; endif; ?>

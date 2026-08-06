@@ -65,9 +65,33 @@ function wa_config(bool $recarregar = false): array
 
 function wa_get(string $chave, string $padrao = ''): string
 {
+    /* O token pode vir do AMBIENTE, e o ambiente tem precedência.
+     *
+     * É a forma mais segura de guardá-lo: definido no pool do PHP-FPM
+     * (env[FESTIVAL_WA_TOKEN]), ele nunca entra no banco e, portanto, nunca
+     * aparece em dump, backup ou cópia da base. A tela passa a mostrar que a
+     * credencial vem do servidor e deixa de aceitar edição.
+     *
+     * Sem a variável, cai para o valor gravado pela tela — que continua
+     * funcionando, só com uma superfície de exposição maior. */
+    if ($chave === 'wa_token') {
+        $doAmbiente = getenv('FESTIVAL_WA_TOKEN');
+        if (is_string($doAmbiente) && $doAmbiente !== '') {
+            return $doAmbiente;
+        }
+    }
+
     $c = wa_config();
 
     return $c[$chave] ?? $padrao;
+}
+
+/** O token está vindo do ambiente (e não do banco)? */
+function wa_token_do_ambiente(): bool
+{
+    $v = getenv('FESTIVAL_WA_TOKEN');
+
+    return is_string($v) && $v !== '';
 }
 
 /**
@@ -264,6 +288,19 @@ function wa_enviar(int $mensagemId): array
         return ['ok' => false, 'erro' => 'Mensagem não encontrada.'];
     }
 
+    /* Recusa reenviar credenciais.
+     *
+     * O corpo guardado tem a senha mascarada — reenviar mandaria ao jurado
+     * uma mensagem com "Senha: ••••••••", inútil e confusa. A regra fica
+     * aqui, e não só na tela: esconder o botão não impede alguém de chamar
+     * a ação direto. */
+    if (($m['tipo'] ?? '') === 'credenciais') {
+        return [
+            'ok'   => false,
+            'erro' => 'Credenciais não podem ser reenviadas — a senha não fica guardada. Gere uma nova senha.',
+        ];
+    }
+
     if (!wa_ativo()) {
         wa_marcar($mensagemId, 'erro', 'Integração do WhatsApp desativada ou incompleta.');
 
@@ -433,6 +470,63 @@ function wa_http(string $url, string $corpo, array $cabecalhos): array
 /* ===========================================================================
  * MENSAGENS PRONTAS
  * ======================================================================== */
+
+/**
+ * Envia as credenciais AGORA e grava o histórico com a senha mascarada.
+ *
+ * O caminho normal é enfileirar e depois enviar — mas isso guardaria o corpo
+ * da mensagem no banco, e o corpo contém a senha em texto. Guardar a senha
+ * assim anularia todo o cuidado de só armazenar o hash: quem lesse a tabela
+ * `mensagens` teria a senha de todos os jurados.
+ *
+ * Aqui a mensagem real existe apenas em memória, o tempo do disparo. O que
+ * fica registrado é a mesma mensagem com a linha da senha substituída.
+ *
+ * Por isso mensagens deste tipo não podem ser "reenviadas": o conteúdo
+ * original não existe mais em lugar nenhum. Reenviar exige gerar nova senha.
+ *
+ * @return array{ok:bool,erro:string,id:int}
+ */
+function wa_enviar_credenciais(
+    string $nome,
+    string $telefone,
+    string $textoReal,
+    ?int $eventoId = null,
+    ?int $juradoId = null
+): array {
+    $mascarado = preg_replace('/^(Senha:\s*).+$/mu', '$1••••••••', $textoReal) ?? $textoReal;
+
+    $id = wa_enfileirar('credenciais', $nome, $telefone, $mascarado, $eventoId, $juradoId);
+    if ($id === 0) {
+        return ['ok' => false, 'erro' => 'Não foi possível registrar o envio.', 'id' => 0];
+    }
+
+    if (!wa_ativo()) {
+        wa_marcar($id, 'erro', 'Integração do WhatsApp desativada ou incompleta.');
+
+        return ['ok' => false, 'erro' => 'Integração desativada.', 'id' => $id];
+    }
+
+    $tel = wa_telefone($telefone);
+    if ($tel === '') {
+        wa_marcar($id, 'erro', 'Telefone inválido.');
+
+        return ['ok' => false, 'erro' => 'Telefone inválido.', 'id' => $id];
+    }
+
+    // Dispara com o texto REAL, que não é gravado em lugar nenhum.
+    $r = wa_disparar($tel, $textoReal);
+
+    if ($r['ok']) {
+        wa_marcar($id, 'enviado', null, $r['id'] ?? null);
+
+        return ['ok' => true, 'erro' => '', 'id' => $id];
+    }
+
+    wa_marcar($id, 'erro', $r['erro']);
+
+    return ['ok' => false, 'erro' => $r['erro'], 'id' => $id];
+}
 
 function wa_texto_credenciais(string $nome, string $usuario, string $senha, string $evento, string $url): string
 {
