@@ -1036,6 +1036,256 @@ td {
 }
 
 /* ---------------------------------------------------------------------------
+   8e. Telas novas: usuários, WhatsApp e mensagens
+   ------------------------------------------------------------------------- */
+.config-duas {
+    display: grid;
+    gap: var(--esp-4);
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+    align-items: start;
+}
+
+.config-duas .lado {
+    display: grid;
+    gap: var(--esp-4);
+}
+
+@media (max-width: 900px) {
+    .config-duas {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
+.ajuda-bloco {
+    margin: 0;
+    font-size: var(--t-sm);
+    line-height: 1.55;
+    color: var(--sesc-muted, #536078);
+}
+
+/* O .compact-form do app.css usa duas colunas, pensado para formulários
+   curtos. Aqui os campos são um por linha e devem ocupar a largura toda —
+   um "Access Token" de 200 caracteres num campo de 200px é ilegível. */
+.config-duas .compact-form,
+.config-duas .form-stack {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.config-duas .form-stack label,
+.config-duas .form-stack input,
+.config-duas .form-stack select {
+    width: 100%;
+    grid-column: 1 / -1;
+}
+
+.lista-status {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: var(--esp-2);
+}
+
+.lista-status li {
+    display: grid;
+    gap: 2px;
+    padding: var(--esp-3);
+    border-radius: var(--ui-raio);
+    border-left: 4px solid transparent;
+    background: #f5f7fb;
+    font-size: var(--t-sm);
+}
+
+.lista-status li small {
+    color: var(--sesc-muted, #536078);
+}
+
+.lista-status li.ok     { border-left-color: #1f7a34; background: #eefaf0; }
+.lista-status li.off    { border-left-color: #b42318; background: #fdeceb; }
+.lista-status li.neutro { border-left-color: #94a3b8; }
+
+.filtros-linha {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--esp-2);
+    margin-bottom: var(--esp-3);
+}
+
+.chip {
+    display: inline-flex;
+    align-items: center;
+    min-height: 38px;
+    padding: 0 var(--esp-4);
+    border: 1px solid var(--line, #dde3ec);
+    border-radius: 999px;
+    background: #fff;
+    color: inherit;
+    font-size: var(--t-sm);
+    font-weight: 700;
+    text-decoration: none;
+}
+
+.chip.ativo {
+    border-color: var(--sesc-blue, #002f8f);
+    background: var(--sesc-blue, #002f8f);
+    color: #fff;
+}
+
+.status-pill.enviado  { color: #1f7a34; background: #dff3e3; }
+.status-pill.pendente { color: #9a6400; background: #fff1c7; }
+.status-pill.erro     { color: #b42318; background: #fdeceb; }
+
+.erro-texto {
+    color: #b42318;
+    line-height: 1.35;
+}
+
+/* ---------------------------------------------------------------------------
+   8f. Votação em celular e tablet
+ *
+ * É a tela mais usada do sistema no dia do evento, e a única usada em pé,
+ * com uma mão, sob pressão de tempo. Os ajustes abaixo atacam o que mais
+ * atrapalha nesse contexto.
+   ------------------------------------------------------------------------- */
+@media (max-width: 1023.98px) {
+    /* 1. O cabeçalho consumia a primeira tela inteira antes de aparecer
+          qualquer critério. Compactado, sem esconder nada. */
+    .judge-event-head {
+        gap: var(--esp-2);
+        padding-block: var(--esp-3);
+    }
+
+    .judge-event-head h1 {
+        font-size: clamp(1rem, .85rem + 1.4vw, 1.3rem);
+    }
+
+    .judge-event-head p,
+    .judge-event-head small {
+        font-size: var(--t-xs);
+    }
+
+    .judge-timer {
+        margin-left: 0;
+    }
+
+    /* 2. Alvos de toque. As notas eram círculos pequenos; com 11 critérios,
+          errar o número custa tempo e gera nota errada. */
+    .score-picker label {
+        min-width: 46px;
+        min-height: 46px;
+    }
+
+    .score-picker span {
+        min-width: 46px;
+        min-height: 46px;
+        display: grid;
+        place-items: center;
+        font-size: 1.05rem;
+        font-weight: 800;
+    }
+
+    .decimal-picker button {
+        min-width: 46px;
+        min-height: 44px;
+        font-size: 1rem;
+    }
+
+    .score-box {
+        min-height: 52px;
+        font-size: 1.2rem;
+    }
+
+    /* 3. Cada critério vira um bloco visualmente separado, para não haver
+          dúvida sobre qual nota pertence a qual critério ao rolar. */
+    .criterion-row {
+        padding: var(--esp-4) var(--esp-3);
+        gap: var(--esp-2);
+    }
+
+    .criterion-row:nth-child(even) {
+        background: rgba(15, 23, 42, .02);
+    }
+
+    .criterion-name strong {
+        font-size: 1rem;
+    }
+
+    /* 4. Barra fixa de ações.
+          Com 11 critérios, o botão de salvar ficava a uma tela e meia de
+          rolagem do último campo preenchido. Agora acompanha a rolagem. */
+    .judge-nav {
+        position: sticky;
+        bottom: 0;
+        z-index: 30;
+        display: grid;
+        gap: var(--esp-2);
+        margin: 0 calc(var(--esp-3) * -1) calc(var(--esp-3) * -1);
+        padding: var(--esp-3);
+        background: rgba(255, 255, 255, .97);
+        backdrop-filter: blur(6px);
+        border-top: 1px solid var(--line, #dde3ec);
+        box-shadow: 0 -6px 18px rgba(15, 23, 42, .08);
+    }
+
+    .judge-nav .button {
+        width: 100%;
+        min-height: 52px;
+        font-size: 1rem;
+    }
+
+    /* 5. O painel lateral de resumo desce para o fim, em vez de espremer
+          a coluna das notas. */
+    .judge-vote-grid {
+        grid-template-columns: minmax(0, 1fr);
+        padding-inline: var(--esp-3);
+    }
+
+    .evaluation-summary {
+        order: 2;
+    }
+
+    /* 6. Assinatura: área utilizável com o dedo. */
+    .signature-pad-wrap canvas {
+        width: 100%;
+        min-height: 160px;
+        touch-action: none;
+    }
+
+    .participant-hero-card {
+        padding: var(--esp-4);
+    }
+}
+
+/* Telas pequenas de verdade */
+@media (max-width: 420px) {
+    .score-picker {
+        gap: 6px;
+    }
+
+    .score-picker label,
+    .score-picker span {
+        min-width: 42px;
+        min-height: 42px;
+    }
+}
+
+/* Tablet em retrato: aproveita a largura sem espremer */
+@media (min-width: 700px) and (max-width: 1023.98px) {
+    .criterion-row {
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+        align-items: center;
+    }
+
+    .criterion-row .score-input-wrap {
+        grid-column: 2;
+    }
+
+    .judge-nav {
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    }
+}
+
+/* ---------------------------------------------------------------------------
    9. Grades que se adaptam sozinhas
    ------------------------------------------------------------------------- */
 .metric-grid,

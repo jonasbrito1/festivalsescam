@@ -480,11 +480,11 @@ function mysql_sync_judges(PDO $pdo, array $itens): void
 {
     $ids = [];
     $sql = $pdo->prepare(
-        'INSERT INTO judges (id, event_id, name, username, password_hash, status, created_at)
-         VALUES (:id, :evento, :nome, :usuario, :senha, :status, :criado)
+        'INSERT INTO judges (id, event_id, name, username, phone, password_hash, status, created_at)
+         VALUES (:id, :evento, :nome, :usuario, :fone, :senha, :status, :criado)
          ON DUPLICATE KEY UPDATE event_id = VALUES(event_id), name = VALUES(name),
-             username = VALUES(username), password_hash = VALUES(password_hash),
-             status = VALUES(status)'
+             username = VALUES(username), phone = VALUES(phone),
+             password_hash = VALUES(password_hash), status = VALUES(status)'
     );
 
     foreach ($itens as $j) {
@@ -494,6 +494,7 @@ function mysql_sync_judges(PDO $pdo, array $itens): void
             ':evento'  => (int) $j['event_id'],
             ':nome'    => (string) $j['name'],
             ':usuario' => (string) $j['username'],
+            ':fone'    => (string) ($j['phone'] ?? ''),
             ':senha'   => (string) $j['password'],
             ':status'  => ($j['status'] ?? 'ativo') === 'inativo' ? 'inativo' : 'ativo',
             ':criado'  => mysql_data($j['created_at'] ?? null) ?? date('Y-m-d H:i:s'),
@@ -680,6 +681,7 @@ function mysql_ler_banco(): ?array
                 'event_id'   => (int) $r['event_id'],
                 'name'       => (string) $r['name'],
                 'username'   => (string) $r['username'],
+                'phone'      => (string) ($r['phone'] ?? ''),
                 'password'   => (string) $r['password_hash'],
                 'status'     => (string) $r['status'],
                 'created_at' => mysql_iso($r['created_at']),

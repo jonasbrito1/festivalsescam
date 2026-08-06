@@ -8,6 +8,10 @@ const PARTICIPANT_UPLOAD_DIR = __DIR__ . '/public/uploads/participants';
  * FESTIVAL_DB_MODO nao for definido — ver lib/mysql.php. */
 require_once __DIR__ . '/lib/mysql.php';
 
+/* Integracao WhatsApp: configuracao, fila e envio. Inerte enquanto a
+ * integracao nao estiver ligada na tela de Configuracoes. */
+require_once __DIR__ . '/lib/whatsapp.php';
+
 /* ---------------------------------------------------------------------------
  * [SEGURANCA] Onde ficam os arquivos de sessao.
  *
@@ -1224,6 +1228,70 @@ function database_status(): array
     return ['state' => 'warning', 'label' => 'Armazenamento local em uso'];
 }
 
+/**
+ * Gera uma senha legível para ditar por telefone se preciso.
+ *
+ * Sem caracteres que se confundem na leitura (O/0, I/l/1), porque estas
+ * senhas são transmitidas a pessoas — uma senha "segura" que ninguém
+ * consegue digitar acaba anotada num papel colado no monitor.
+ */
+function gerar_senha(int $tamanho = 10): string
+{
+    $alfabeto = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+    $max = strlen($alfabeto) - 1;
+    $saida = '';
+
+    for ($i = 0; $i < $tamanho; $i++) {
+        $saida .= $alfabeto[random_int(0, $max)];
+    }
+
+    return $saida;
+}
+
+/**
+ * Enfileira e tenta enviar as credenciais por WhatsApp.
+ * Devolve uma frase para juntar ao aviso da tela (ou '' se não se aplica).
+ */
+function enviar_credenciais(
+    string $nome,
+    string $usuario,
+    string $senha,
+    string $telefone,
+    ?array $evento,
+    int $eventoId,
+    ?int $juradoId = null
+): string {
+    if (trim($telefone) === '') {
+        return 'Sem telefone cadastrado — as credenciais não foram enviadas.';
+    }
+
+    if (!wa_ativo()) {
+        return 'Envio por WhatsApp desativado — entregue a senha pessoalmente.';
+    }
+
+    $url = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http')
+         . '://' . ($_SERVER['HTTP_HOST'] ?? 'localhost') . '/';
+
+    $texto = wa_texto_credenciais(
+        $nome,
+        $usuario,
+        $senha,
+        (string) ($evento['name'] ?? 'Festival'),
+        $url
+    );
+
+    $id = wa_enfileirar('credenciais', $nome, $telefone, $texto, $eventoId, $juradoId);
+    if ($id === 0) {
+        return 'Não foi possível registrar o envio.';
+    }
+
+    $r = wa_enviar($id);
+
+    return $r['ok']
+        ? 'Credenciais enviadas por WhatsApp.'
+        : 'Falha ao enviar por WhatsApp (' . $r['erro'] . '). Reenvie em Mensagens.';
+}
+
 function is_admin(): bool
 {
     return isset($_SESSION['admin_id']);
@@ -1993,16 +2061,47 @@ function handle_post(): void
     if ($action === 'create_judge') {
         require_admin();
         $eventId = (int)$_POST['event_id'];
+        $nome = clean($_POST['name'] ?? '');
+        $usuario = strtolower(clean($_POST['username'] ?? ''));
+        $telefone = clean($_POST['phone'] ?? '');
+
+        /* [SEGURANCA] A senha padrao era '123456', fixa no codigo. Quem
+         * cadastrasse um jurado sem preencher o campo criava um acesso de
+         * senha trivial — e ninguem percebia. Agora, em branco, o sistema
+         * sorteia uma senha e a mostra UMA vez para a organizacao. */
+        $senha = (string)($_POST['password'] ?? '');
+        $gerada = false;
+        if (strlen($senha) < 6) {
+            $senha = gerar_senha();
+            $gerada = true;
+        }
+
+        $judgeId = next_id($db, 'judges');
         $db['judges'][] = [
-            'id' => next_id($db, 'judges'),
+            'id' => $judgeId,
             'event_id' => $eventId,
-            'name' => clean($_POST['name'] ?? ''),
-            'username' => strtolower(clean($_POST['username'] ?? '')),
-            'password' => password_hash((string)($_POST['password'] ?? '123456'), PASSWORD_DEFAULT),
+            'name' => $nome,
+            'username' => $usuario,
+            'phone' => $telefone,
+            'password' => password_hash($senha, PASSWORD_DEFAULT),
             'created_at' => date('c'),
         ];
         db_write($db);
-        flash('Jurado cadastrado.');
+
+        $aviso = 'Jurado cadastrado.';
+        if ($gerada) {
+            // A senha nao fica guardada em lugar nenhum de forma recuperavel.
+            $aviso .= ' Senha gerada: ' . $senha . ' — anote agora, ela nao pode ser consultada depois.';
+        }
+
+        // Envio das credenciais, se houver telefone e integracao ligada.
+        $evento = find_by_id($db['events'] ?? [], $eventId);
+        $envio = enviar_credenciais($nome, $usuario, $senha, $telefone, $evento, $eventId, $judgeId);
+        if ($envio !== '') {
+            $aviso .= ' ' . $envio;
+        }
+
+        flash($aviso);
         redirect_to('dashboard', ['event_id' => $eventId, 'section' => 'jurados']);
     }
 
@@ -2021,6 +2120,7 @@ function handle_post(): void
             $eventId = (int)$judge['event_id'];
             $db['judges'][$index]['name'] = clean($_POST['name'] ?? '');
             $db['judges'][$index]['username'] = strtolower(clean($_POST['username'] ?? ''));
+            $db['judges'][$index]['phone'] = clean($_POST['phone'] ?? ($judge['phone'] ?? ''));
             if ($password !== '') {
                 $db['judges'][$index]['password'] = password_hash($password, PASSWORD_DEFAULT);
             }
@@ -2232,6 +2332,123 @@ function handle_post(): void
         redirect_to('dashboard', ['event_id' => $eventId, 'section' => 'configuracoes', 'config_tab' => $configTab]);
     }
 
+    /* ===================================================================
+     * Integração WhatsApp
+     * =================================================================== */
+
+    if ($action === 'save_whatsapp') {
+        require_admin();
+
+        $ok = wa_salvar_config([
+            'wa_ativo'           => isset($_POST['wa_ativo']) ? '1' : '0',
+            'wa_numero_saida'    => clean($_POST['wa_numero_saida'] ?? ''),
+            'wa_phone_number_id' => clean($_POST['wa_phone_number_id'] ?? ''),
+            'wa_business_id'     => clean($_POST['wa_business_id'] ?? ''),
+            // Em branco preserva o token já gravado — ver wa_salvar_config().
+            'wa_token'           => (string)($_POST['wa_token'] ?? ''),
+            'wa_versao_api'      => clean($_POST['wa_versao_api'] ?? 'v20.0'),
+            'wa_endpoint'        => clean($_POST['wa_endpoint'] ?? ''),
+            'wa_notificar_voto'  => isset($_POST['wa_notificar_voto']) ? '1' : '0',
+            'wa_ddi_padrao'      => preg_replace('/\D+/', '', (string)($_POST['wa_ddi_padrao'] ?? '55')) ?: '55',
+        ]);
+
+        flash($ok ? 'Configuração do WhatsApp salva.' : 'Não foi possível salvar a configuração.', $ok ? 'success' : 'error');
+        redirect_to('dashboard', ['section' => 'whatsapp', 'event_id' => active_event_id($db)]);
+    }
+
+    if ($action === 'testar_whatsapp') {
+        require_admin();
+        $telefone = clean($_POST['telefone_teste'] ?? '');
+
+        if ($telefone === '') {
+            flash('Informe um telefone para o teste.', 'error');
+            redirect_to('dashboard', ['section' => 'whatsapp', 'event_id' => active_event_id($db)]);
+        }
+
+        $id = wa_enfileirar(
+            'avulsa',
+            'Teste de integração',
+            $telefone,
+            "Teste de integração do sistema de notas de jurados.\n\nSe você recebeu esta mensagem, o envio automático está funcionando."
+        );
+        $r = $id ? wa_enviar($id) : ['ok' => false, 'erro' => 'Falha ao registrar.'];
+
+        flash(
+            $r['ok'] ? 'Mensagem de teste enviada.' : 'Falha no teste: ' . $r['erro'],
+            $r['ok'] ? 'success' : 'error'
+        );
+        redirect_to('dashboard', ['section' => 'whatsapp', 'event_id' => active_event_id($db)]);
+    }
+
+    if ($action === 'reenviar_mensagem') {
+        require_admin();
+        $id = (int)($_POST['mensagem_id'] ?? 0);
+
+        if ($id > 0) {
+            $r = wa_enviar($id);
+            flash($r['ok'] ? 'Mensagem enviada.' : 'Falha ao enviar: ' . $r['erro'], $r['ok'] ? 'success' : 'error');
+        }
+
+        redirect_to('dashboard', ['section' => 'mensagens', 'event_id' => active_event_id($db)]);
+    }
+
+    if ($action === 'reenviar_pendentes') {
+        require_admin();
+        $enviadas = 0;
+        $falhas = 0;
+
+        foreach (wa_mensagens(200, null, 'pendente') as $m) {
+            $r = wa_enviar((int)$m['id']);
+            $r['ok'] ? $enviadas++ : $falhas++;
+        }
+        foreach (wa_mensagens(200, null, 'erro') as $m) {
+            $r = wa_enviar((int)$m['id']);
+            $r['ok'] ? $enviadas++ : $falhas++;
+        }
+
+        flash("Reenvio concluído: {$enviadas} enviada(s), {$falhas} com falha.", $falhas ? 'error' : 'success');
+        redirect_to('dashboard', ['section' => 'mensagens', 'event_id' => active_event_id($db)]);
+    }
+
+    /* Nova senha para um jurado + reenvio das credenciais.
+     *
+     * Não existe "reenviar a mesma senha": a senha só existe em hash, que é
+     * de mão única. Reenviar exige gerar uma nova — e é isso que este bloco
+     * faz, deixando claro na mensagem que a anterior deixou de valer. */
+    if ($action === 'nova_senha_jurado') {
+        require_admin();
+        $judgeId = (int)($_POST['judge_id'] ?? 0);
+        $eventId = active_event_id($db);
+
+        foreach (($db['judges'] ?? []) as $i => $j) {
+            if ((int)$j['id'] !== $judgeId) {
+                continue;
+            }
+
+            $senha = gerar_senha();
+            $db['judges'][$i]['password'] = password_hash($senha, PASSWORD_DEFAULT);
+            $eventId = (int)$j['event_id'];
+            db_write($db);
+
+            $evento = find_by_id($db['events'] ?? [], $eventId);
+            $envio = enviar_credenciais(
+                (string)$j['name'],
+                (string)$j['username'],
+                $senha,
+                (string)($j['phone'] ?? ''),
+                $evento,
+                $eventId,
+                $judgeId
+            );
+
+            flash('Nova senha de ' . $j['name'] . ': ' . $senha . ' — a anterior deixou de valer. ' . $envio);
+            redirect_to('dashboard', ['event_id' => $eventId, 'section' => 'usuarios']);
+        }
+
+        flash('Jurado não encontrado.', 'error');
+        redirect_to('dashboard', ['event_id' => $eventId, 'section' => 'usuarios']);
+    }
+
     if ($action === 'save_votes') {
         require_judge();
         $eventId = (int)$_SESSION['judge_event_id'];
@@ -2414,6 +2631,48 @@ function handle_post(): void
             }
         }
 
+        /* Notificação de voto registrado.
+         *
+         * Enfileirada DEPOIS de a nota estar gravada — assim a mensagem nunca
+         * anuncia um lançamento que não aconteceu. Uma falha de envio não
+         * derruba a votação: fica registrada na fila para reenvio. */
+        if (wa_ativo() && wa_get('wa_notificar_voto') === '1') {
+            $jurado = find_by_id($db['judges'] ?? [], $judgeId);
+            $telefoneJurado = (string)($jurado['phone'] ?? '');
+
+            if ($telefoneJurado !== '') {
+                $todos = items_for_event($db['participants'] ?? [], $eventId);
+                $avaliados = [];
+                foreach (($db['votes'] ?? []) as $v) {
+                    if ((int)$v['event_id'] === $eventId && (int)$v['judge_id'] === $judgeId) {
+                        $avaliados[(int)$v['participant_id']] = true;
+                    }
+                }
+
+                $texto = wa_texto_voto(
+                    (string)($jurado['name'] ?? 'Jurado'),
+                    (string)($participant['name'] ?? 'Participante'),
+                    (string)(find_by_id($db['events'] ?? [], $eventId)['name'] ?? 'Festival'),
+                    count($avaliados),
+                    count($todos)
+                );
+
+                $idMsg = wa_enfileirar(
+                    'voto_registrado',
+                    (string)($jurado['name'] ?? 'Jurado'),
+                    $telefoneJurado,
+                    $texto,
+                    $eventId,
+                    $judgeId,
+                    $participantId
+                );
+
+                if ($idMsg > 0) {
+                    wa_enviar($idMsg);
+                }
+            }
+        }
+
         if (is_json_request()) {
             json_response([
                 'ok' => true,
@@ -2464,6 +2723,8 @@ function menu_icone(string $nome): string
         'escudo'        => '<path d="M12 3l8 3v6c0 4.4-3.2 8.2-8 9-4.8-.8-8-4.6-8-9V6z"/><path d="M9 12l2 2 4-4"/>',
         'pessoa'        => '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
         'cadeado'       => '<rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>',
+        'whatsapp'      => '<path d="M21 11.5a8.4 8.4 0 0 1-12.4 7.4L3 21l2.2-5.5A8.4 8.4 0 1 1 21 11.5z"/><path d="M9 9.5c0 3 2.5 5.5 5.5 5.5l1-1.4-2-1-.9.8a5 5 0 0 1-2-2l.8-.9-1-2z"/>',
+        'mensagem'      => '<path d="M21 15a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2z"/><path d="M8 9h8M8 13h5"/>',
     ];
 
     $forma = $formas[$nome] ?? $formas['painel'];
@@ -2604,6 +2865,315 @@ function render_footer(): void
         <script src="<?= asset('public/assets/js/ui.js') ?>"></script>
     </body>
     </html>
+    <?php
+}
+
+/* ===========================================================================
+ * Telas de gestão de usuários e integração
+ * ======================================================================== */
+
+/** Painel único de administradores e jurados, com telefone e senha. */
+function render_secao_usuarios(array $db, int $eventId): void
+{
+    $judges = $eventId ? items_for_event($db['judges'] ?? [], $eventId) : ($db['judges'] ?? []);
+    $admins = $db['admins'] ?? [];
+    $evento = $eventId ? find_by_id($db['events'] ?? [], $eventId) : null;
+    ?>
+    <section class="management-page">
+        <div class="management-head">
+            <h2>Usuários</h2>
+        </div>
+
+        <div class="panel">
+            <p class="ajuda-bloco">
+                <strong>Como as senhas funcionam.</strong>
+                O sistema guarda apenas o resumo criptográfico da senha — nunca a senha em si.
+                Por isso ela aparece <em>uma única vez</em>, no momento em que é gerada.
+                Não há como consultá-la depois: se alguém perder o acesso, gere uma nova senha,
+                que substitui a anterior e pode ser reenviada por WhatsApp.
+            </p>
+        </div>
+
+        <!-- ---------- Jurados ---------- -->
+        <div class="panel data-panel">
+            <div class="management-head compact">
+                <h2>Jurados<?= $evento ? ' — ' . h($evento['name']) : '' ?></h2>
+            </div>
+            <div class="table-wrap">
+                <table class="admin-table responsive-cards">
+                    <thead>
+                        <tr>
+                            <th>Nome</th><th>Usuário</th><th>Telefone</th><th>Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    <?php if (!$judges): ?>
+                        <tr><td colspan="4">Nenhum jurado cadastrado neste evento.</td></tr>
+                    <?php else: foreach ($judges as $j): ?>
+                        <tr>
+                            <td data-label="Nome"><strong><?= h($j['name']) ?></strong></td>
+                            <td data-label="Usuário"><?= h($j['username']) ?></td>
+                            <td data-label="Telefone">
+                                <?php $tel = (string)($j['phone'] ?? ''); ?>
+                                <?= $tel !== '' ? h(wa_telefone_exibicao(wa_telefone($tel))) : '<span class="dica">não informado</span>' ?>
+                            </td>
+                            <td data-label="Ações" class="table-actions">
+                                <a class="button small" href="?page=dashboard&section=jurados&event_id=<?= $eventId ?>&judge_edit=<?= (int)$j['id'] ?>">Editar</a>
+                                <form method="post" class="em-linha"
+                                      onsubmit="return confirm('Gerar uma nova senha para <?= h(addslashes($j['name'])) ?>? A senha atual deixa de valer.');">
+                                    <input type="hidden" name="action" value="nova_senha_jurado">
+                                    <input type="hidden" name="judge_id" value="<?= (int)$j['id'] ?>">
+                                    <button class="button small" type="submit">Nova senha + enviar</button>
+                                </form>
+                            </td>
+                        </tr>
+                    <?php endforeach; endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- ---------- Administradores ---------- -->
+        <div class="panel data-panel">
+            <div class="management-head compact">
+                <h2>Administradores</h2>
+            </div>
+            <div class="table-wrap">
+                <table class="admin-table responsive-cards">
+                    <thead><tr><th>Nome</th><th>E-mail</th><th>Telefone</th></tr></thead>
+                    <tbody>
+                    <?php foreach ($admins as $a): ?>
+                        <tr>
+                            <td data-label="Nome"><strong><?= h($a['name']) ?></strong></td>
+                            <td data-label="E-mail"><?= h($a['email']) ?></td>
+                            <td data-label="Telefone">
+                                <?php $tel = (string)($a['phone'] ?? ''); ?>
+                                <?= $tel !== '' ? h(wa_telefone_exibicao(wa_telefone($tel))) : '<span class="dica">não informado</span>' ?>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="panel form-stack compact-form">
+            <h2>Novo administrador</h2>
+            <form method="post" class="form-stack">
+                <input type="hidden" name="action" value="create_admin">
+                <label>Nome <input name="name" required maxlength="120"></label>
+                <label>E-mail <input name="email" type="email" required maxlength="180"></label>
+                <label>Telefone (WhatsApp) <input name="phone" inputmode="tel" placeholder="(92) 98888-7777"></label>
+                <label>Senha <input name="password" type="password" minlength="8" required autocomplete="new-password"></label>
+                <div class="form-actions">
+                    <button class="button primary" type="submit">Cadastrar administrador</button>
+                </div>
+            </form>
+        </div>
+    </section>
+    <?php
+}
+
+/** Configuração da integração com o WhatsApp. */
+function render_secao_whatsapp(array $db, int $eventId): void
+{
+    $c = wa_config(true);
+    ?>
+    <section class="management-page">
+        <div class="management-head">
+            <h2>WhatsApp</h2>
+        </div>
+
+        <div class="config-duas">
+            <div class="panel form-stack compact-form">
+                <h2>Canal WhatsApp Cloud API</h2>
+                <form method="post" class="form-stack" autocomplete="off">
+                    <input type="hidden" name="action" value="save_whatsapp">
+
+                    <label>Número de saída
+                        <input name="wa_numero_saida" value="<?= h($c['wa_numero_saida'] ?? '') ?>" placeholder="(92) 98487-8678">
+                    </label>
+
+                    <label>Phone Number ID
+                        <input name="wa_phone_number_id" value="<?= h($c['wa_phone_number_id'] ?? '') ?>" inputmode="numeric">
+                    </label>
+                    <p class="dica">Use o Phone Number ID do API Setup, não o número de telefone.</p>
+
+                    <label>Business Account ID
+                        <input name="wa_business_id" value="<?= h($c['wa_business_id'] ?? '') ?>" inputmode="numeric">
+                    </label>
+
+                    <label>Access Token
+                        <input name="wa_token" type="password" autocomplete="new-password"
+                               placeholder="<?= wa_tem_token() ? '•••••••• (já configurado — deixe em branco para manter)' : 'cole o token aqui' ?>">
+                    </label>
+                    <p class="dica">
+                        <?php /* O token nunca volta para a tela: o campo mostra apenas se ele
+                                 existe. Se ele fosse devolvido no HTML, bastaria abrir o
+                                 código-fonte da página para copiá-lo. */ ?>
+                        Por segurança o token nunca é exibido de volta.
+                        <?= wa_tem_token() ? 'Há um token gravado.' : 'Nenhum token gravado ainda.' ?>
+                    </p>
+
+                    <label>Versão da API
+                        <input name="wa_versao_api" value="<?= h($c['wa_versao_api'] ?? 'v20.0') ?>">
+                    </label>
+
+                    <label>Endpoint próprio (opcional)
+                        <input name="wa_endpoint" value="<?= h($c['wa_endpoint'] ?? '') ?>" placeholder="http://127.0.0.1:3000/api/whatsapp/send">
+                    </label>
+                    <p class="dica">Se preenchido, as mensagens vão para este serviço em vez da Graph API.</p>
+
+                    <label>DDI padrão
+                        <input name="wa_ddi_padrao" value="<?= h($c['wa_ddi_padrao'] ?? '55') ?>" inputmode="numeric" size="4">
+                    </label>
+
+                    <label class="caixa">
+                        <input type="checkbox" name="wa_ativo" value="1" <?= ($c['wa_ativo'] ?? '0') === '1' ? 'checked' : '' ?>>
+                        Ativar envio por WhatsApp
+                    </label>
+
+                    <label class="caixa">
+                        <input type="checkbox" name="wa_notificar_voto" value="1" <?= ($c['wa_notificar_voto'] ?? '1') === '1' ? 'checked' : '' ?>>
+                        Avisar o jurado a cada participante avaliado
+                    </label>
+
+                    <div class="form-actions">
+                        <button class="button primary" type="submit">Salvar configuração</button>
+                    </div>
+                </form>
+            </div>
+
+            <div class="lado">
+                <div class="panel">
+                    <h2>Situação</h2>
+                    <ul class="lista-status">
+                        <li class="<?= wa_ativo() ? 'ok' : 'off' ?>">
+                            <strong><?= wa_ativo() ? 'Integração ativa' : 'Integração inativa' ?></strong>
+                            <small><?= wa_ativo()
+                                ? 'As mensagens saem automaticamente.'
+                                : 'Ative e informe token + Phone Number ID, ou um endpoint próprio.' ?></small>
+                        </li>
+                        <li class="<?= wa_tem_token() ? 'ok' : 'off' ?>">
+                            <strong>Token de acesso</strong>
+                            <small><?= wa_tem_token() ? 'Gravado.' : 'Não configurado.' ?></small>
+                        </li>
+                        <li class="<?= ($c['wa_endpoint'] ?? '') !== '' ? 'ok' : 'neutro' ?>">
+                            <strong>Caminho de saída</strong>
+                            <small><?= ($c['wa_endpoint'] ?? '') !== '' ? 'Endpoint próprio.' : 'Graph API do WhatsApp.' ?></small>
+                        </li>
+                    </ul>
+                </div>
+
+                <div class="panel form-stack">
+                    <h2>Enviar um teste</h2>
+                    <form method="post" class="form-stack">
+                        <input type="hidden" name="action" value="testar_whatsapp">
+                        <label>Telefone <input name="telefone_teste" inputmode="tel" placeholder="(92) 98888-7777" required></label>
+                        <div class="form-actions">
+                            <button class="button" type="submit">Enviar teste</button>
+                        </div>
+                    </form>
+                </div>
+
+                <div class="panel">
+                    <h2>O que é enviado</h2>
+                    <ul class="lista-status">
+                        <li class="ok"><strong>Credenciais</strong><small>Ao cadastrar um jurado ou gerar nova senha.</small></li>
+                        <li class="ok"><strong>Voto registrado</strong><small>Quando o jurado conclui um participante.</small></li>
+                        <li class="ok"><strong>Fila</strong><small>Cada destinatário gera uma mensagem própria, com status e reenvio.</small></li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+    <?php
+}
+
+/** Acompanhamento das mensagens: status, erro e reenvio. */
+function render_secao_mensagens(array $db, int $eventId): void
+{
+    $filtro = $_GET['status'] ?? '';
+    $mensagens = wa_mensagens(150, $eventId ?: null, is_string($filtro) ? $filtro : '');
+    $resumo = wa_resumo($eventId ?: null);
+    $base = '?page=dashboard&section=mensagens&event_id=' . $eventId;
+    ?>
+    <section class="management-page">
+        <div class="management-head">
+            <h2>Mensagens</h2>
+            <div class="management-actions">
+                <form method="post" class="em-linha">
+                    <input type="hidden" name="action" value="reenviar_pendentes">
+                    <button class="button primary" type="submit">Reenviar pendentes e falhas</button>
+                </form>
+            </div>
+        </div>
+
+        <section class="summary-strip">
+            <div><?= card_icone('relatorio', 'blue') ?><strong><?= (int)$resumo['total'] ?></strong><small>Total</small></div>
+            <div><?= card_icone('votacao', 'green') ?><strong><?= (int)$resumo['enviado'] ?></strong><small>Enviadas</small></div>
+            <div><?= card_icone('apuracao', 'gold') ?><strong><?= (int)$resumo['pendente'] ?></strong><small>Pendentes</small></div>
+            <div><?= card_icone('instrucao', 'purple') ?><strong><?= (int)$resumo['erro'] ?></strong><small>Com erro</small></div>
+        </section>
+
+        <div class="filtros-linha">
+            <a class="chip <?= $filtro === '' ? 'ativo' : '' ?>" href="<?= h($base) ?>">Todas</a>
+            <a class="chip <?= $filtro === 'enviado' ? 'ativo' : '' ?>" href="<?= h($base) ?>&status=enviado">Enviadas</a>
+            <a class="chip <?= $filtro === 'pendente' ? 'ativo' : '' ?>" href="<?= h($base) ?>&status=pendente">Pendentes</a>
+            <a class="chip <?= $filtro === 'erro' ? 'ativo' : '' ?>" href="<?= h($base) ?>&status=erro">Com erro</a>
+        </div>
+
+        <div class="panel data-panel">
+            <div class="table-wrap">
+                <table class="admin-table responsive-cards">
+                    <thead>
+                        <tr><th>Quando</th><th>Destinatário</th><th>Tipo</th><th>Situação</th><th>Ações</th></tr>
+                    </thead>
+                    <tbody>
+                    <?php if (!$mensagens): ?>
+                        <tr><td colspan="5">Nenhuma mensagem registrada.</td></tr>
+                    <?php else: foreach ($mensagens as $m): ?>
+                        <tr>
+                            <td data-label="Quando"><?= h(date('d/m H:i', strtotime((string)$m['criado_em']))) ?></td>
+                            <td data-label="Destinatário">
+                                <strong><?= h((string)$m['destinatario']) ?></strong><br>
+                                <small><?= h(wa_telefone_exibicao((string)$m['telefone'])) ?></small>
+                            </td>
+                            <td data-label="Tipo">
+                                <?php
+                                $rotulos = [
+                                    'credenciais'     => 'Credenciais',
+                                    'voto_registrado' => 'Voto registrado',
+                                    'avulsa'          => 'Avulsa',
+                                ];
+                                echo h($rotulos[$m['tipo']] ?? (string)$m['tipo']);
+                                ?>
+                            </td>
+                            <td data-label="Situação">
+                                <span class="status-pill <?= h((string)$m['status']) ?>"><?= h((string)$m['status']) ?></span>
+                                <?php if (!empty($m['erro'])): ?>
+                                    <br><small class="erro-texto"><?= h((string)$m['erro']) ?></small>
+                                <?php endif; ?>
+                                <?php if ((int)$m['tentativas'] > 1): ?>
+                                    <br><small class="dica"><?= (int)$m['tentativas'] ?> tentativas</small>
+                                <?php endif; ?>
+                            </td>
+                            <td data-label="Ações" class="table-actions">
+                                <form method="post" class="em-linha">
+                                    <input type="hidden" name="action" value="reenviar_mensagem">
+                                    <input type="hidden" name="mensagem_id" value="<?= (int)$m['id'] ?>">
+                                    <button class="button small" type="submit">
+                                        <?= $m['status'] === 'enviado' ? 'Reenviar' : 'Enviar' ?>
+                                    </button>
+                                </form>
+                            </td>
+                        </tr>
+                    <?php endforeach; endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
     <?php
 }
 
@@ -2754,6 +3324,9 @@ function render_dashboard(): void
         ['relatorios',    'relatorio',    'Relatórios'],
         ['placar',        'placar',       'Placar em tempo real'],
         ['exportar',      'exportar',     'Exportar notas'],
+        ['usuarios',      'pessoa',       'Usuários e senhas'],
+        ['whatsapp',      'whatsapp',     'WhatsApp'],
+        ['mensagens',     'mensagem',     'Mensagens'],
         ['configuracoes', 'configuracao', 'Configurações do evento'],
     ];
     ?>
@@ -2794,6 +3367,19 @@ function render_dashboard(): void
             </header>
 
             <div class="admin-inner">
+
+    <?php /* Telas novas: gestão de usuários, integração e fila de mensagens. */ ?>
+    <?php if ($section === 'usuarios'): ?>
+        <?php render_secao_usuarios($db, $eventId); ?>
+    <?php endif; ?>
+
+    <?php if ($section === 'whatsapp'): ?>
+        <?php render_secao_whatsapp($db, $eventId); ?>
+    <?php endif; ?>
+
+    <?php if ($section === 'mensagens'): ?>
+        <?php render_secao_mensagens($db, $eventId); ?>
+    <?php endif; ?>
 
     <?php if ($section === 'painel'): ?>
         <?php /* Sem atualizacao automatica aqui de proposito.
@@ -3754,7 +4340,14 @@ function old_dashboard_fragment_unused(): void
                 <input type="hidden" name="event_id" value="<?= $eventId ?>">
                 <label>Nome <input required name="name"></label>
                 <label>Usuário <input required name="username"></label>
-                <label>Senha <input required name="password" type="password"></label>
+                <label>Telefone (WhatsApp)
+                    <input name="phone" inputmode="tel" placeholder="(92) 98888-7777">
+                </label>
+                <p class="dica">Com telefone informado e integração ativa, as credenciais são enviadas automaticamente.</p>
+                <label>Senha
+                    <input name="password" type="password" autocomplete="new-password" placeholder="deixe em branco para gerar">
+                </label>
+                <p class="dica">Em branco, o sistema gera uma senha e a mostra uma única vez.</p>
                 <button class="button primary" type="submit">Cadastrar</button>
             </form>
 
