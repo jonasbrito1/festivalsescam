@@ -1,0 +1,66 @@
+# ============================================================================
+# Arquivos que NUNCA devem ir para o repositorio.
+#
+# O repositorio e publico. Tudo que entrar aqui fica visivel para qualquer
+# pessoa e permanece no historico do Git mesmo depois de removido.
+# ============================================================================
+
+# ---------------------------------------------------------------------------
+# DADOS PESSOAIS E CREDENCIAIS
+#
+# db.json guarda o banco inteiro: nomes de participantes (incluindo menores,
+# nas categorias infantil e juvenil), jurados, e os hashes de senha de todos
+# os acessos. Nunca versionar.
+# ---------------------------------------------------------------------------
+data/db.json
+data/db.*.json
+data/sessions/
+mobile_pwa/data/db.json
+mobile_pwa/data/sessions/
+
+# Fotos dos participantes — imagem de pessoa identificavel.
+public/uploads/participants/*
+!public/uploads/participants/.gitkeep
+mobile_pwa/public/uploads/participants/*
+dist/uploads/
+
+# Variaveis de ambiente: senhas de banco, chaves, endereços internos.
+.env
+.env.*
+!.env.example
+config/.env
+mobile_capacitor/.env
+
+# Estado de execucao
+storage/
+*.log
+
+# ---------------------------------------------------------------------------
+# DEPENDENCIAS E ARTEFATOS DE BUILD
+# ---------------------------------------------------------------------------
+node_modules/
+vendor/
+
+# Android (Capacitor): saidas de compilacao, nao codigo-fonte
+mobile_capacitor/android/build/
+mobile_capacitor/android/app/build/
+mobile_capacitor/android/.gradle/
+mobile_capacitor/android/local.properties
+mobile_capacitor/android/app/src/main/assets/public/
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# ---------------------------------------------------------------------------
+# Sistema operacional e editores
+# ---------------------------------------------------------------------------
+Thumbs.db
+Desktop.ini
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*~
+*.bak
+*.old

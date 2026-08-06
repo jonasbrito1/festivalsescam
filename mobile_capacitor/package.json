@@ -1,0 +1,21 @@
+{
+  "name": "festival-jurados-capacitor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Wrapper Android para o Sistema de Notas de Jurados.",
+  "scripts": {
+    "cap:sync": "npx cap sync",
+    "cap:copy": "npx cap copy",
+    "cap:open:android": "npx cap open android",
+    "cap:add:android": "npx cap add android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.1.0",
+    "@capacitor/core": "^7.1.0",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.1.0",
+    "typescript": "^5.6.3"
+  }
+}

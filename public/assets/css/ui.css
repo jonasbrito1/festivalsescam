@@ -1,0 +1,1116 @@
+/* ============================================================================
+   Camada de refinamento de interface — carregada DEPOIS de app.css.
+   Mantida separada de proposito: as 2.558 linhas do app.css seguem intactas,
+   e desligar este arquivo devolve o visual anterior.
+
+   Cobre:
+     1. Tokens e tipografia fluida
+     2. Menu lateral recolhivel (rail no desktop, gaveta no celular)
+     3. Acessibilidade: foco visivel, alvos de toque, movimento reduzido
+     4. Responsividade de 320px a telas ultralargas
+   ========================================================================= */
+
+/* ---------------------------------------------------------------------------
+   1. Tokens
+   ------------------------------------------------------------------------- */
+:root {
+    --menu-largura: 272px;
+    --menu-rail: 78px;
+    --menu-atual: var(--menu-largura);
+
+    --ui-raio: 10px;
+    --ui-raio-g: 16px;
+
+    --ui-foco: #2563eb;
+    --ui-transicao: 200ms cubic-bezier(.4, 0, .2, 1);
+
+    /* Escala fluida: acompanha a largura da tela sem saltos entre breakpoints */
+    --t-xs: clamp(.72rem, .69rem + .12vw, .8rem);
+    --t-sm: clamp(.82rem, .79rem + .14vw, .92rem);
+    --t-md: clamp(.94rem, .9rem + .18vw, 1.05rem);
+    --t-lg: clamp(1.1rem, 1rem + .4vw, 1.35rem);
+    --t-xl: clamp(1.4rem, 1.15rem + 1.1vw, 2.1rem);
+
+    --esp-1: .25rem;
+    --esp-2: .5rem;
+    --esp-3: .75rem;
+    --esp-4: 1rem;
+    --esp-5: 1.5rem;
+    --esp-6: 2rem;
+}
+
+/* Evita rolagem horizontal em qualquer largura — o defeito mais comum
+   de layout em celular. */
+/* `clip` e nao `hidden`.
+ *
+ * Os dois cortam o que vaza para os lados, mas `overflow: hidden` transforma
+ * o elemento em um contexto de rolagem — e isso DESLIGA `position: sticky`
+ * em tudo que esta dentro. Foi o que aconteceu: o menu lateral, o cabecalho
+ * e o topo das tabelas deixaram de ficar fixos e passaram a rolar junto com
+ * a pagina, deixando um vazio embaixo do menu.
+ *
+ * `clip` corta sem criar contexto de rolagem, entao o sticky continua
+ * funcionando. */
+html,
+body {
+    max-width: 100%;
+    overflow-x: clip;
+}
+
+body {
+    font-size: var(--t-md);
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+}
+
+/* Rolagem suave ao trocar de secao, respeitando quem pede menos movimento */
+@media (prefers-reduced-motion: no-preference) {
+    html {
+        scroll-behavior: smooth;
+    }
+}
+
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+/* ---------------------------------------------------------------------------
+   2. Foco visivel
+   Antes o foco do teclado era o contorno padrao do navegador, quase invisivel
+   sobre o azul do menu. Navegar sem mouse era adivinhacao.
+   ------------------------------------------------------------------------- */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+    outline: 3px solid var(--ui-foco);
+    outline-offset: 2px;
+    border-radius: 6px;
+}
+
+.admin-sidebar :where(a, button):focus-visible {
+    outline-color: #fff;
+}
+
+/* ---------------------------------------------------------------------------
+   3. Menu lateral
+   ------------------------------------------------------------------------- */
+.admin-shell,
+.judge-shell {
+    grid-template-columns: var(--menu-atual) minmax(0, 1fr);
+    transition: grid-template-columns var(--ui-transicao);
+}
+
+.admin-sidebar {
+    width: var(--menu-atual);
+    padding: var(--esp-5) var(--esp-3);
+    overflow-x: clip;
+    overflow-y: auto;
+    transition: width var(--ui-transicao);
+    scrollbar-width: thin;
+}
+
+/* O menu acompanha a rolagem e ocupa a altura da tela, nao a do conteudo.
+   `dvh` conta a barra do navegador no celular, que `vh` ignora. */
+@media (min-width: 1024px) {
+    .admin-sidebar {
+        position: sticky;
+        top: 0;
+        align-self: start;
+        height: 100dvh;
+    }
+}
+
+.sidebar-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--esp-2);
+    padding-bottom: var(--esp-4);
+    margin-bottom: var(--esp-2);
+    border-bottom: 1px solid rgba(255, 255, 255, .16);
+}
+
+.sidebar-logo {
+    padding-bottom: 0;
+    border-bottom: 0;
+    justify-items: start;
+    gap: var(--esp-1);
+    min-width: 0;
+}
+
+.sidebar-logo small {
+    font-size: var(--t-xs);
+    line-height: 1.3;
+    opacity: .85;
+    white-space: normal;
+}
+
+/* ---- Itens ---- */
+.admin-menu {
+    gap: 2px;
+    margin: var(--esp-3) 0;
+    /* O menu ocupa a faixa `1fr` do menu lateral. Sem isto, o grid distribui
+       a altura sobrando entre as linhas: no painel do jurado, que tem so
+       cinco itens, eles ficavam espalhados de ponta a ponta e o item ativo
+       virava um bloco enorme. */
+    align-content: start;
+}
+
+.admin-menu a,
+.sidebar-logout button {
+    min-height: 46px;
+    gap: var(--esp-3);
+    padding: 0 var(--esp-3);
+    border-radius: var(--ui-raio);
+    /* Sentenca, nao Caixa Alta Em Cada Palavra */
+    font-size: var(--t-sm);
+    font-weight: 600;
+    letter-spacing: .01em;
+    white-space: nowrap;
+    transition: background var(--ui-transicao), color var(--ui-transicao);
+}
+
+.admin-menu a:hover {
+    background: rgba(255, 255, 255, .12);
+    color: #fff;
+}
+
+.admin-menu a.active {
+    font-weight: 800;
+}
+
+/* Faixa que marca o item atual — leitura mais rapida que so a cor de fundo */
+.admin-menu a.active::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    width: 4px;
+    height: 60%;
+    border-radius: 0 4px 4px 0;
+    background: currentColor;
+}
+
+.admin-menu a {
+    position: relative;
+}
+
+/* Icone: tamanho fixo para o rail alinhar perfeitamente */
+.admin-menu a .menu-icone,
+.sidebar-logout .menu-icone {
+    width: 22px;
+    height: 22px;
+    flex: 0 0 22px;
+    display: grid;
+    place-items: center;
+    font-size: 0;
+}
+
+.admin-menu a .menu-icone svg,
+.sidebar-logout .menu-icone svg {
+    width: 20px;
+    height: 20px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 1.9;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+/* O app.css tem `.admin-menu a span { width: 24px; font-size: 24px }`, pensado
+   para as antigas siglas de duas letras. Esse seletor (0,1,2) vence
+   `.menu-rotulo` (0,1,0) por especificidade, e o rotulo saia cortado em
+   24px — "Painel principal" virava "Pa". Por isso a regra abaixo qualifica
+   o seletor e devolve largura e tamanho de fonte normais. */
+.admin-menu a .menu-rotulo,
+.sidebar-logout button .menu-rotulo {
+    width: auto;
+    min-width: 0;
+    display: block;
+    font-size: var(--t-sm);
+    line-height: 1.25;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    transition: opacity var(--ui-transicao);
+}
+
+/* A marca ocupava um terco da altura do menu. Reduzida, sobra espaco para os
+   itens — que sao o motivo do menu existir. */
+.sidebar-logo .sesc-logo.small {
+    font-size: 30px;
+    line-height: 1;
+}
+
+.sidebar-logo .sesc-logo.small span {
+    width: auto;
+    font-size: inherit;
+}
+
+/* ---- Botao sanduiche ---- */
+.app-menu-btn {
+    width: 44px;
+    height: 44px;
+    flex: 0 0 44px;
+    display: inline-grid;
+    place-items: center;
+    padding: 0;
+    border: 1px solid var(--line, #dde3ec);
+    border-radius: var(--ui-raio);
+    background: #fff;
+    color: inherit;
+    cursor: pointer;
+    transition: background var(--ui-transicao), border-color var(--ui-transicao);
+}
+
+.app-menu-btn:hover {
+    background: #eef2f8;
+}
+
+/* Contraste suficiente para o botao nao sumir no azul do menu — e o unico
+   caminho de volta quando o menu esta recolhido. */
+.admin-sidebar .app-menu-btn {
+    border-color: rgba(255, 255, 255, .45);
+    background: rgba(255, 255, 255, .18);
+    color: #fff;
+}
+
+.admin-sidebar .app-menu-btn:hover {
+    background: rgba(255, 255, 255, .3);
+}
+
+.hamburguer {
+    width: 20px;
+    height: 14px;
+    display: grid;
+    align-content: space-between;
+}
+
+.hamburguer i {
+    display: block;
+    height: 2px;
+    border-radius: 2px;
+    background: currentColor;
+    transition: transform var(--ui-transicao), opacity var(--ui-transicao);
+}
+
+/* Vira "X" quando a gaveta esta aberta */
+.is-menu-open .app-menu-btn .hamburguer i:nth-child(1) {
+    transform: translateY(6px) rotate(45deg);
+}
+
+.is-menu-open .app-menu-btn .hamburguer i:nth-child(2) {
+    opacity: 0;
+}
+
+.is-menu-open .app-menu-btn .hamburguer i:nth-child(3) {
+    transform: translateY(-6px) rotate(-45deg);
+}
+
+/* ---------------------------------------------------------------------------
+   4. Estado recolhido (rail) — apenas em telas largas
+   ------------------------------------------------------------------------- */
+@media (min-width: 1024px) {
+    .is-menu-collapsed {
+        --menu-atual: var(--menu-rail);
+    }
+
+    .is-menu-collapsed .admin-sidebar {
+        padding-inline: var(--esp-2);
+    }
+
+    /* Os seletores abaixo precisam ser MAIS especificos que
+       `.admin-menu a .menu-rotulo` (0,2,1), definido acima para desfazer o
+       corte de 24px herdado do app.css. Sem isso o rotulo continuava
+       ocupando largura mesmo invisivel, e empurrava os icones para fora do
+       rail. */
+    .is-menu-collapsed .admin-menu a .menu-rotulo,
+    .is-menu-collapsed .sidebar-logout button .menu-rotulo,
+    .is-menu-collapsed .sidebar-logo small {
+        opacity: 0;
+        width: 0;
+        overflow: hidden;
+    }
+
+    .is-menu-collapsed .sidebar-head {
+        justify-content: center;
+    }
+
+    .is-menu-collapsed .sidebar-logo {
+        display: none;
+    }
+
+    .is-menu-collapsed .admin-menu a,
+    .is-menu-collapsed .sidebar-logout button {
+        gap: 0;
+        justify-content: center;
+        padding-inline: 0;
+    }
+
+    .is-menu-collapsed .admin-menu a.active::before {
+        height: 70%;
+    }
+
+    /* Nome do item ao passar o mouse, para o rail nao virar adivinhacao */
+    .is-menu-collapsed .admin-menu a::after {
+        content: attr(data-titulo);
+        position: absolute;
+        left: calc(100% + 10px);
+        top: 50%;
+        transform: translateY(-50%);
+        padding: 6px 12px;
+        border-radius: 8px;
+        background: #111827;
+        color: #fff;
+        font-size: var(--t-xs);
+        font-weight: 600;
+        white-space: nowrap;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity var(--ui-transicao);
+        z-index: 60;
+    }
+
+    .is-menu-collapsed .admin-menu a:hover::after,
+    .is-menu-collapsed .admin-menu a:focus-visible::after {
+        opacity: 1;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   5. Gaveta em telas pequenas
+   Abaixo de 1024px o menu sai do fluxo e vira gaveta sobreposta: em celular,
+   272px fixos comiam metade da tela.
+   ------------------------------------------------------------------------- */
+@media (max-width: 1023.98px) {
+    .admin-shell,
+    .judge-shell {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .admin-sidebar {
+        position: fixed;
+        inset: 0 auto 0 0;
+        z-index: 70;
+        width: min(300px, 86vw);
+        height: 100dvh;
+        transform: translateX(-100%);
+        transition: transform var(--ui-transicao);
+        box-shadow: 0 0 40px rgba(0, 0, 0, .35);
+    }
+
+    .is-menu-open .admin-sidebar {
+        transform: translateX(0);
+    }
+
+    .menu-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 60;
+        border: 0;
+        padding: 0;
+        background: rgba(9, 15, 30, .55);
+        backdrop-filter: blur(2px);
+        opacity: 0;
+        visibility: hidden;
+        transition: opacity var(--ui-transicao), visibility var(--ui-transicao);
+        cursor: pointer;
+    }
+
+    .is-menu-open .menu-overlay {
+        opacity: 1;
+        visibility: visible;
+    }
+
+    /* Trava a rolagem do fundo enquanto a gaveta esta aberta */
+    body.is-menu-open {
+        overflow: hidden;
+    }
+
+    /* O botao antigo, que so aparecia no celular, deu lugar ao sanduiche
+       no cabecalho — presente em todas as larguras. */
+    .sidebar-menu-toggle {
+        display: none !important;
+    }
+
+    .admin-menu,
+    .sidebar-logout {
+        display: grid !important;
+    }
+}
+
+@media (min-width: 1024px) {
+    .menu-overlay {
+        display: none;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   6. Cabecalhos de conteudo
+   O cabecalho tinha 148px fixos: em telas de 13" comia um terco da area util.
+   ------------------------------------------------------------------------- */
+.admin-top,
+.judge-event-head {
+    height: auto;
+    min-height: 76px;
+    display: flex;
+    align-items: center;
+    gap: var(--esp-4);
+    padding: var(--esp-4) clamp(var(--esp-4), 3vw, var(--esp-6));
+    flex-wrap: wrap;
+    position: sticky;
+    top: 0;
+    z-index: 40;
+    background: #fff;
+    box-shadow: 0 1px 0 rgba(15, 23, 42, .08);
+}
+
+.admin-top h1,
+.judge-event-head h1 {
+    margin: 0;
+    font-size: var(--t-xl);
+    line-height: 1.2;
+}
+
+.admin-top p,
+.judge-event-head p {
+    margin: 2px 0 0;
+    font-size: var(--t-sm);
+}
+
+/* CUIDADO ao mexer aqui: em telas estreitas o app.css troca .admin-top para
+   `flex-direction: column`. Em coluna, o flex-basis passa a valer para a
+   ALTURA — um `flex: 1 1 240px` virava 240px de espaco vazio embaixo do
+   titulo. Por isso a direcao e fixada em linha, e a quebra fica por conta
+   do wrap. */
+.admin-top,
+.judge-event-head {
+    flex-direction: row !important;
+}
+
+.admin-top > div:first-of-type,
+.judge-event-head > div:first-of-type {
+    min-width: 0;
+    flex: 1 1 240px;
+}
+
+@media (max-width: 620px) {
+    .admin-top > div:first-of-type,
+    .judge-event-head > div:first-of-type {
+        flex: 1 1 100%;
+    }
+
+    /* Sinos e avatares decorativos consomem altura que, no celular, faz
+       falta para o conteudo. */
+    .admin-profile .bell,
+    .admin-profile .avatar {
+        width: 38px;
+        height: 38px;
+        font-size: 18px;
+    }
+}
+
+.admin-profile,
+.judge-person,
+.judge-timer {
+    flex: 0 0 auto;
+}
+
+/* O cabecalho do jurado era uma grade de 3 colunas fixas
+   (1.5fr / 320px / 430px). Somando 750px rigidos, ele estourava em qualquer
+   notebook menor. Como flex, as tres areas se acomodam e quebram a linha
+   quando falta espaco. */
+.judge-timer {
+    margin-left: auto;
+}
+
+/* Um unico botao por vez:
+   - no desktop, o sanduiche fica no menu (recolhe o rail)
+   - no celular, fica na barra do conteudo (abre a gaveta), e o do menu
+     vira o "X" de fechar quando a gaveta esta aberta */
+@media (min-width: 1024px) {
+    .admin-top .app-menu-btn,
+    .judge-event-head .app-menu-btn {
+        display: none;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   7. Conteudo, cartoes e formularios
+   ------------------------------------------------------------------------- */
+/* O espacamento lateral do conteudo ja vem de .admin-inner no app.css.
+   Redefini-lo aqui so criava conflito. */
+
+.panel {
+    border-radius: var(--ui-raio-g);
+}
+
+/* Guarda contra vazamento horizontal: sem min-width:0, um filho em grid ou
+   flex se recusa a encolher abaixo do proprio conteudo e empurra a pagina
+   para os lados. */
+.admin-content,
+.judge-content,
+.admin-inner,
+.management-page,
+.panel,
+.table-wrap {
+    min-width: 0;
+}
+
+/* O campo de busca tinha min-width fixo de 260px. Somado ao botao ao lado,
+   passava da largura de um celular e a linha vazava para fora da tela.
+
+   Abaixo de 760px o app.css empilha .management-actions em coluna. Nessa
+   direcao, flex-basis vale para a ALTURA — por isso aqui usamos largura,
+   nunca flex-basis. */
+.management-actions input,
+.management-actions select {
+    min-width: 0;
+    width: 100%;
+}
+
+@media (min-width: 761px) {
+    .management-head,
+    .management-actions {
+        flex-wrap: wrap;
+    }
+
+    .management-actions input,
+    .management-actions select {
+        width: auto;
+        flex: 1 1 220px;
+    }
+}
+
+/* Nada dentro do conteudo pode ultrapassar a largura da tela. */
+.admin-inner > *,
+.management-page > *,
+.panel {
+    max-width: 100%;
+}
+
+/* Alvos de toque de 44px: recomendacao de acessibilidade para dedo em vidro */
+input,
+select,
+textarea,
+button,
+.button {
+    font-size: max(16px, var(--t-sm)); /* 16px evita o zoom automatico do iOS */
+    min-height: 44px;
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+    min-height: 0;
+    width: 20px;
+    height: 20px;
+    accent-color: var(--primary, #0f766e);
+}
+
+textarea {
+    min-height: 96px;
+    resize: vertical;
+}
+
+label {
+    font-size: var(--t-sm);
+}
+
+/* ---------------------------------------------------------------------------
+   8. Tabelas
+   ------------------------------------------------------------------------- */
+.table-wrap,
+.tabela-rolagem {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    border-radius: var(--ui-raio);
+}
+
+table {
+    font-size: var(--t-sm);
+}
+
+th,
+td {
+    padding: var(--esp-3);
+}
+
+/* O modo cartao para telas estreitas ja existe no app.css (.responsive-cards)
+   e funciona bem — nao e reescrito aqui. Estas regras so melhoram a leitura
+   da tabela larga: cabecalho que acompanha a rolagem e linhas alternadas. */
+@media (min-width: 761px) {
+    .admin-table thead th {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+    }
+
+    .admin-table tbody tr:nth-child(even) {
+        background: rgba(15, 23, 42, .025);
+    }
+
+    .admin-table tbody tr:hover {
+        background: rgba(37, 99, 235, .06);
+    }
+
+    /* Sem largura minima, o navegador comprimia todas as colunas para caber:
+       o nome quebrava em tres linhas e os botoes de acao empilhavam um sobre
+       o outro, deixando a linha altissima e cheia de vazio.
+       Com a largura minima, a tabela rola na horizontal (o .table-wrap ja
+       tem overflow-x) em vez de se espremer. Abaixo de 760px nao se aplica:
+       ali a tabela ja vira lista de cartoes. */
+    .admin-table {
+        min-width: 780px;
+    }
+
+    /* Acoes sempre em uma linha so. */
+    .admin-table .table-actions {
+        flex-wrap: nowrap;
+        gap: 6px;
+    }
+
+    .admin-table .table-actions .button {
+        min-height: 32px;
+        padding: 0 10px;
+        font-size: var(--t-xs);
+        white-space: nowrap;
+    }
+
+    /* Nomes e titulos nao precisam quebrar tao cedo. */
+    .admin-table td,
+    .admin-table th {
+        vertical-align: middle;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   8b. Icones dos cartoes de resumo e atalho
+   ------------------------------------------------------------------------- */
+.metric-icon svg {
+    width: 30px;
+    height: 30px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+/* O circulo de 72px cabia quando o simbolo era um caractere. Com icone de
+   traco, um pouco menor fica melhor equilibrado — e sobra largura para o
+   numero, que e a informacao que importa no cartao. */
+.metric-icon {
+    width: 58px;
+    height: 58px;
+    flex: 0 0 58px;
+}
+
+/* A faixa de resumo reservava uma coluna fixa de 72px para o icone e 24px de
+   recuo de cada lado. Com o icone menor sobrava um vao morto e, ao mesmo
+   tempo, o numero e o rotulo ficavam espremidos contra as divisorias.
+   Coluna automatica resolve os dois: o icone ocupa o que precisa e o texto
+   fica com o resto. */
+.summary-strip > div {
+    grid-template-columns: auto minmax(0, 1fr);
+    column-gap: 14px;
+    padding-inline: 18px;
+}
+
+.summary-strip strong {
+    font-size: clamp(1.35rem, 1.05rem + .9vw, 1.75rem);
+    line-height: 1.15;
+}
+
+.summary-strip small {
+    font-size: var(--t-xs);
+    line-height: 1.3;
+}
+
+/* Com auto-fit a faixa acomoda os cinco itens enquanto couberem e quebra em
+   duas linhas so quando faltar espaco de verdade — em vez de comprimir o
+   conteudo contra as divisorias.
+   165px e o menor tamanho em que "Participantes" ainda cabe em uma linha:
+   valores maiores quebravam a faixa em 4+1 mesmo sobrando espaco. */
+@media (min-width: 761px) {
+    .summary-strip {
+        grid-template-columns: repeat(auto-fit, minmax(165px, 1fr));
+        row-gap: 18px;
+    }
+}
+
+@media (min-width: 761px) and (max-width: 1400px) {
+    .summary-strip > div {
+        border-right: 0;
+    }
+}
+
+.criterion-name .metric-icon {
+    width: 40px;
+    height: 40px;
+    flex: 0 0 40px;
+}
+
+.criterion-name .metric-icon svg {
+    width: 22px;
+    height: 22px;
+}
+
+@media (max-width: 620px) {
+    .metric-icon {
+        width: 46px;
+        height: 46px;
+        flex: 0 0 46px;
+    }
+
+    .metric-icon svg {
+        width: 24px;
+        height: 24px;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   8c. Padronizacao dos cartoes
+ *
+ * Os cartoes de atalho vinham centralizados, com titulo e descricao quebrando
+ * em linhas de larguras diferentes. Ao lado de tabelas e listas alinhadas a
+ * esquerda, o resultado ficava desalinhado e mais dificil de varrer com o
+ * olho: a cada cartao a leitura recomeca em um ponto horizontal diferente.
+ *
+ * Padrao unico: tudo alinhado a esquerda, icone no topo, botao encostado na
+ * base para os cartoes terminarem na mesma linha.
+   ------------------------------------------------------------------------- */
+.quick-card {
+    justify-items: start;
+    text-align: left;
+    gap: var(--esp-2);
+    padding: var(--esp-5);
+    border-radius: var(--ui-raio-g);
+    /* Empurra o botao para a base: cartoes de alturas diferentes terminam
+       alinhados. */
+    grid-template-rows: auto auto 1fr auto;
+    height: 100%;
+}
+
+.quick-card strong {
+    font-size: var(--t-lg);
+    line-height: 1.25;
+}
+
+.quick-card small {
+    min-height: 0;
+    font-size: var(--t-sm);
+    line-height: 1.45;
+    /* Sem justificar: em coluna estreita o texto justificado abre buracos
+       entre as palavras. Alinhado a esquerda le melhor. */
+    text-align: left;
+    text-wrap: pretty;
+    /* A descricao recebe a linha `1fr` que empurra o botao para baixo. Sem
+       isto ela ficaria centralizada nesse espaco e cada cartao comecaria a
+       descricao em uma altura diferente. */
+    align-self: start;
+}
+
+/* Cinco cartoes lado a lado ficavam estreitos demais e o titulo quebrava em
+   duas linhas. Com auto-fit eles se acomodam e passam para a linha de baixo
+   quando faltar largura, em vez de espremer. */
+.quick-grid,
+.quick-cards {
+    display: grid;
+    gap: var(--esp-4);
+    grid-template-columns: repeat(auto-fit, minmax(min(230px, 100%), 1fr));
+    align-items: stretch;
+}
+
+.quick-card em,
+.quick-card .button {
+    align-self: end;
+    justify-self: stretch;
+    width: 100%;
+    text-align: center;
+    font-style: normal;
+}
+
+/* Painel e o bloco mais repetido do sistema (15 tabelas, 14 formularios,
+   relatorios, estados vazios). Cada variante vinha com um recuo proprio, o
+   que fazia o conteudo comecar em alturas diferentes de uma tela para
+   outra. Um recuo unico, que acompanha a largura da tela. */
+.panel {
+    padding: clamp(var(--esp-4), 2.2vw, var(--esp-5));
+}
+
+/* A TABELA encosta nas bordas do painel de proposito: a moldura ja e o
+   painel, e um recuo duplo desperdicava largura util.
+   Mas o painel tambem carrega titulo e barra de acoes, e zerar o recuo do
+   bloco inteiro colava esse texto na borda. Por isso o recuo sai do painel
+   e vai para cada filho que NAO seja a tabela. */
+.panel.data-panel {
+    padding: 0;
+    overflow: hidden;
+}
+
+.panel.data-panel > *:not(.table-wrap):not(table) {
+    padding-inline: clamp(var(--esp-4), 2.2vw, var(--esp-5));
+}
+
+.panel.data-panel > *:first-child:not(.table-wrap):not(table) {
+    padding-top: clamp(var(--esp-4), 2.2vw, var(--esp-5));
+    padding-bottom: var(--esp-3);
+}
+
+.panel.data-panel > *:last-child:not(.table-wrap):not(table) {
+    padding-bottom: clamp(var(--esp-4), 2.2vw, var(--esp-5));
+}
+
+/* Em telas estreitas a tabela vira lista de cartoes; sem um respiro lateral
+   esses cartoes encostariam na borda do painel. */
+@media (max-width: 760px) {
+    .panel.data-panel > .table-wrap {
+        padding: var(--esp-3);
+    }
+}
+
+.panel > h2,
+.panel > h3,
+.panel > .section-title {
+    margin-top: 0;
+    margin-bottom: var(--esp-4);
+}
+
+.panel > *:last-child {
+    margin-bottom: 0;
+}
+
+/* Formularios: mesmo espaco entre campos em todas as telas. */
+.form-stack {
+    display: grid;
+    gap: var(--esp-3);
+}
+
+.form-stack label {
+    display: grid;
+    gap: var(--esp-1);
+    font-weight: 600;
+}
+
+.form-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--esp-3);
+    margin-top: var(--esp-2);
+}
+
+/* Estados vazios continuam centralizados — ali a centralizacao ajuda, porque
+   e uma mensagem curta e isolada, nao um texto para ler em sequencia. */
+.panel.empty-state {
+    display: grid;
+    justify-items: center;
+    gap: var(--esp-2);
+    padding-block: var(--esp-6);
+    text-align: center;
+    color: var(--muted, #64748b);
+}
+
+/* Titulos de secao com o mesmo peso e respiro em todo o sistema. */
+.section-title h2,
+.management-head h2,
+.panel h2,
+.scoreboard-title h2 {
+    font-size: var(--t-lg);
+    line-height: 1.25;
+    text-wrap: balance;
+}
+
+/* Blocos de conteudo com o mesmo raio e o mesmo respiro interno. */
+.panel,
+.quick-card,
+.summary-strip,
+.data-panel {
+    border-radius: var(--ui-raio-g);
+}
+
+/* Listas de eventos e de configuracoes: mesma altura de linha e mesmo
+   alinhamento vertical dos dois lados da tela. */
+.config-tabs a,
+.recent-events li,
+.recent-events a {
+    min-height: 52px;
+    display: flex;
+    align-items: center;
+    gap: var(--esp-3);
+}
+
+/* ---------------------------------------------------------------------------
+   8d. Tela de acesso
+ *
+ * O tema Sesc do app.css era aplicado a .page-admin-login, .page-judge-login,
+ * .page-dashboard e .page-judge-panel. Só que a raiz do site (/) tambem mostra
+ * a tela de acesso, e ali a classe do body e `page-home` — que ficou de fora
+ * da lista. Resultado: quem entrava pelo endereço principal via a pagina sem
+ * tema, com a barra de topo indevida e os botoes sem fundo (texto branco sobre
+ * branco). Pelo link ?page=admin-login funcionava. Esta regra fecha a lacuna.
+   ------------------------------------------------------------------------- */
+.page-home {
+    --sesc-blue: #002f8f;
+    --sesc-blue-dark: #00247a;
+    --sesc-yellow: #ffc400;
+    --sesc-text: #07143d;
+    --sesc-muted: #536078;
+    background: #f7f9fd;
+}
+
+.page-home .topbar {
+    display: none;
+}
+
+/* Ícones da tela de acesso */
+.access-icon svg {
+    width: 30px;
+    height: 30px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 1.7;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.access-icon {
+    display: grid;
+    place-items: center;
+}
+
+.icon-field {
+    display: flex !important;
+    align-items: center;
+    gap: var(--esp-2);
+}
+
+.icon-field .menu-icone {
+    flex: 0 0 22px;
+    color: var(--sesc-muted, #64748b);
+}
+
+.icon-field .menu-icone svg {
+    width: 20px;
+    height: 20px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.icon-field input {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.login-ajuda {
+    margin: var(--esp-4) 0 0;
+    text-align: center;
+    font-size: var(--t-sm);
+    color: rgba(255, 255, 255, .85);
+}
+
+/* Os dois cartões de acesso lado a lado, empilhando no celular. */
+.login-options {
+    display: grid;
+    gap: var(--esp-5);
+    grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+    align-items: stretch;
+}
+
+.access-card {
+    display: grid;
+    align-content: start;
+    gap: var(--esp-3);
+    padding: clamp(var(--esp-5), 4vw, 40px);
+}
+
+.access-card h2 {
+    margin: 0;
+}
+
+/* ---------------------------------------------------------------------------
+   9. Grades que se adaptam sozinhas
+   ------------------------------------------------------------------------- */
+.metric-grid,
+.quick-cards,
+.card-grid,
+.stats-grid {
+    display: grid;
+    gap: var(--esp-4);
+    grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+}
+
+/* ---------------------------------------------------------------------------
+   10. Mensagens
+   ------------------------------------------------------------------------- */
+.flash {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    margin: 0;
+    padding: var(--esp-3) var(--esp-5);
+    font-size: var(--t-sm);
+    font-weight: 600;
+}
+
+/* ---------------------------------------------------------------------------
+   11. Telas muito estreitas (320px)
+   ------------------------------------------------------------------------- */
+@media (max-width: 380px) {
+    .admin-top,
+    .judge-event-head {
+        padding-inline: var(--esp-3);
+        gap: var(--esp-2);
+    }
+
+    .admin-content > *:not(.admin-top),
+    .judge-content > *:not(.judge-event-head) {
+        padding-inline: var(--esp-3);
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   12. Telas muito largas — o conteudo para de esticar sem limite
+   ------------------------------------------------------------------------- */
+@media (min-width: 1800px) {
+    .admin-content > *:not(.admin-top),
+    .judge-content > *:not(.judge-event-head) {
+        max-width: 1560px;
+        margin-inline: auto;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   13. Movimento reduzido e impressao
+   ------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .01ms !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+@media print {
+    .app-menu-btn,
+    .menu-overlay {
+        display: none !important;
+    }
+
+    .admin-top,
+    .judge-event-head,
+    .flash {
+        position: static;
+        box-shadow: none;
+    }
+}
