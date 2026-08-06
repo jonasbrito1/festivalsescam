@@ -464,7 +464,158 @@ function wa_http(string $url, string $corpo, array $cabecalhos): array
         ?? $json['message']
         ?? mb_substr((string) $resposta, 0, 200);
 
-    return ['ok' => false, 'erro' => "HTTP {$codigo}: {$detalhe}"];
+    $codigoMeta = (int) ($json['error']['code'] ?? 0);
+    $dica = wa_explicar_erro($codigoMeta, (string) $detalhe);
+
+    return ['ok' => false, 'erro' => "HTTP {$codigo}: {$detalhe}" . ($dica !== '' ? ' — ' . $dica : '')];
+}
+
+/**
+ * Traduz os erros mais comuns da API em orientação prática.
+ *
+ * Sem isto a tela mostra só "HTTP 400: API access blocked", que não diz a
+ * quem opera o festival o que fazer. Quase nenhum desses erros se resolve no
+ * código: são estado da conta, da permissão ou da janela de conversa.
+ */
+function wa_explicar_erro(int $codigo, string $mensagem): string
+{
+    $m = mb_strtolower($mensagem);
+
+    if ($codigo === 200 || str_contains($m, 'access blocked')) {
+        return 'a Meta bloqueou o acesso deste aplicativo. Verifique no Meta Business Manager '
+             . 'se o app está ativo, o WhatsApp Business Account verificado e sem restrição de política. '
+             . 'Não é falha do sistema.';
+    }
+
+    if ($codigo === 190 || str_contains($m, 'expired') || str_contains($m, 'session has been invalidated')) {
+        return 'o token expirou ou foi revogado. Gere um novo token permanente no Meta Business Manager.';
+    }
+
+    if ($codigo === 131030 || str_contains($m, 'not in allowed list')) {
+        return 'o número de destino não está na lista de teste. Em modo de desenvolvimento o WhatsApp '
+             . 'só entrega para números cadastrados no painel da Meta.';
+    }
+
+    if ($codigo === 131047 || str_contains($m, 're-engagement') || str_contains($m, '24 hour')) {
+        return 'passou da janela de 24 horas. Fora dela o WhatsApp só aceita MODELO DE MENSAGEM aprovado, '
+             . 'não texto livre. É o caso de quem nunca conversou com este número antes.';
+    }
+
+    if ($codigo === 133010 || str_contains($m, 'not registered')) {
+        return 'o número de saída não está registrado na Cloud API. Conclua o registro no painel da Meta.';
+    }
+
+    if ($codigo === 100) {
+        return 'parâmetro inválido. Confira o Phone Number ID (não é o número de telefone) e a versão da API.';
+    }
+
+    if ($codigo === 131026 || str_contains($m, 'undeliverable')) {
+        return 'o destinatário não tem WhatsApp ativo, ou o número está incorreto.';
+    }
+
+    return '';
+}
+
+/**
+ * Verifica a integração SEM enviar mensagem.
+ *
+ * Um "teste de envio" que falha não distingue token inválido de número
+ * errado, de conta bloqueada, de janela de 24h. Aqui cada etapa é
+ * verificada em separado, e o resultado diz onde está o problema.
+ *
+ * @return array<int,array{etapa:string,ok:bool,detalhe:string}>
+ */
+function wa_diagnostico(): array
+{
+    $r = [];
+    $token = wa_get('wa_token');
+    $phoneId = wa_get('wa_phone_number_id');
+    $versao = wa_get('wa_versao_api') ?: 'v20.0';
+    $endpoint = wa_get('wa_endpoint');
+
+    $r[] = [
+        'etapa'   => 'Token de acesso',
+        'ok'      => $token !== '',
+        'detalhe' => $token !== ''
+            ? (wa_token_do_ambiente() ? 'Definido no servidor (mais seguro).' : 'Gravado no banco.')
+            : 'Não configurado.',
+    ];
+
+    $r[] = [
+        'etapa'   => 'Phone Number ID',
+        'ok'      => $phoneId !== '',
+        'detalhe' => $phoneId !== '' ? $phoneId : 'Não configurado.',
+    ];
+
+    if ($endpoint !== '') {
+        $r[] = [
+            'etapa'   => 'Endpoint próprio',
+            'ok'      => true,
+            'detalhe' => $endpoint . ' — as verificações abaixo não se aplicam.',
+        ];
+
+        return $r;
+    }
+
+    if ($token === '') {
+        return $r;
+    }
+
+    // Etapa 1: o token é aceito pela Meta?
+    $c = wa_http_get("https://graph.facebook.com/{$versao}/me?access_token=" . urlencode($token));
+    $erroMeta = $c['json']['error']['message'] ?? '';
+    $codMeta = (int) ($c['json']['error']['code'] ?? 0);
+
+    $r[] = [
+        'etapa'   => 'Token aceito pela Meta',
+        'ok'      => $c['codigo'] >= 200 && $c['codigo'] < 300,
+        'detalhe' => $c['codigo'] >= 200 && $c['codigo'] < 300
+            ? 'Sim.'
+            : $erroMeta . ' — ' . wa_explicar_erro($codMeta, $erroMeta),
+    ];
+
+    // Etapa 2: o token enxerga este número?
+    if ($phoneId !== '') {
+        $c2 = wa_http_get(
+            "https://graph.facebook.com/{$versao}/{$phoneId}"
+            . '?fields=display_phone_number,verified_name,quality_rating&access_token=' . urlencode($token)
+        );
+        $ok2 = $c2['codigo'] >= 200 && $c2['codigo'] < 300;
+        $erro2 = $c2['json']['error']['message'] ?? '';
+
+        $r[] = [
+            'etapa'   => 'Número de saída acessível',
+            'ok'      => $ok2,
+            'detalhe' => $ok2
+                ? trim(($c2['json']['display_phone_number'] ?? '') . ' ' . ($c2['json']['verified_name'] ?? ''))
+                : $erro2 . ' — ' . wa_explicar_erro((int) ($c2['json']['error']['code'] ?? 0), $erro2),
+        ];
+    }
+
+    return $r;
+}
+
+/** @return array{codigo:int,json:array} */
+function wa_http_get(string $url): array
+{
+    if (!function_exists('curl_init')) {
+        return ['codigo' => 0, 'json' => ['error' => ['message' => 'cURL indisponível.']]];
+    }
+
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT        => 15,
+        CURLOPT_CONNECTTIMEOUT => 6,
+    ]);
+    $resp = curl_exec($ch);
+    $codigo = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    return [
+        'codigo' => $codigo,
+        'json'   => is_string($resp) ? (json_decode($resp, true) ?: []) : [],
+    ];
 }
 
 /* ===========================================================================
@@ -581,8 +732,13 @@ function wa_mensagens(int $limite = 100, ?int $eventoId = null, string $status =
     $onde = [];
     $p = [];
 
+    /* Inclui as mensagens SEM evento vinculado.
+     *
+     * As mensagens de teste da tela de configuração não pertencem a evento
+     * nenhum. Filtrando só por event_id elas sumiam da lista — e era
+     * justamente quem estava testando a integração que precisava vê-las. */
     if ($eventoId) {
-        $onde[] = 'event_id = :ev';
+        $onde[] = '(event_id = :ev OR event_id IS NULL)';
         $p[':ev'] = $eventoId;
     }
     if ($status !== '') {
@@ -618,8 +774,9 @@ function wa_resumo(?int $eventoId = null): array
     }
 
     try {
+        // Mesmo critério da listagem: mensagens sem evento sempre contam.
         $sql = 'SELECT status, COUNT(*) n FROM mensagens'
-             . ($eventoId ? ' WHERE event_id = :ev' : '')
+             . ($eventoId ? ' WHERE (event_id = :ev OR event_id IS NULL)' : '')
              . ' GROUP BY status';
         $st = $pdo->prepare($sql);
         $st->execute($eventoId ? [':ev' => $eventoId] : []);

@@ -2241,16 +2241,119 @@ function handle_post(): void
             redirect_to('dashboard', ['event_id' => active_event_id($db), 'section' => 'apuracao']);
         }
 
+        $emailNovo = strtolower(clean($_POST['email'] ?? ''));
+
+        foreach (($db['admins'] ?? []) as $a) {
+            if (strtolower((string)$a['email']) === $emailNovo) {
+                flash('Já existe um administrador com este e-mail.', 'error');
+                redirect_to('dashboard', ['event_id' => active_event_id($db), 'section' => 'usuarios']);
+            }
+        }
+
         $db['admins'][] = [
             'id' => next_id($db, 'admins'),
             'name' => clean($_POST['name'] ?? ''),
-            'email' => strtolower(clean($_POST['email'] ?? '')),
+            'email' => $emailNovo,
+            'phone' => clean($_POST['phone'] ?? ''),
             'password' => password_hash($senhaNova, PASSWORD_DEFAULT),
             'created_at' => date('c'),
         ];
         db_write($db);
         flash('Administrador cadastrado.');
-        redirect_to('dashboard', ['event_id' => active_event_id($db), 'section' => 'apuracao']);
+        redirect_to('dashboard', ['event_id' => active_event_id($db), 'section' => 'usuarios']);
+    }
+
+    /* Edição de administrador.
+     *
+     * require_admin() no topo é o que restringe a ação: só quem já está
+     * autenticado como administrador pode alterar qualquer conta. */
+    if ($action === 'update_admin') {
+        require_admin();
+
+        $adminId = (int)($_POST['admin_id'] ?? 0);
+        $nome = clean($_POST['name'] ?? '');
+        $email = strtolower(clean($_POST['email'] ?? ''));
+        $telefone = clean($_POST['phone'] ?? '');
+        $senha = (string)($_POST['password'] ?? '');
+        $destino = ['event_id' => active_event_id($db), 'section' => 'usuarios'];
+
+        if ($nome === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            flash('Informe nome e um e-mail válido.', 'error');
+            redirect_to('dashboard', $destino);
+        }
+
+        if ($senha !== '' && strlen($senha) < 8) {
+            flash('A nova senha deve ter ao menos 8 caracteres.', 'error');
+            redirect_to('dashboard', $destino);
+        }
+
+        // O e-mail é a chave de login: não pode colidir com outra conta.
+        foreach (($db['admins'] ?? []) as $a) {
+            if ((int)$a['id'] !== $adminId && strtolower((string)$a['email']) === $email) {
+                flash('Este e-mail já pertence a outro administrador.', 'error');
+                redirect_to('dashboard', $destino);
+            }
+        }
+
+        $achou = false;
+        foreach (($db['admins'] ?? []) as $i => $a) {
+            if ((int)$a['id'] !== $adminId) {
+                continue;
+            }
+
+            $db['admins'][$i]['name'] = $nome;
+            $db['admins'][$i]['email'] = $email;
+            $db['admins'][$i]['phone'] = $telefone;
+            if ($senha !== '') {
+                $db['admins'][$i]['password'] = password_hash($senha, PASSWORD_DEFAULT);
+            }
+            $achou = true;
+            break;
+        }
+
+        if (!$achou) {
+            flash('Administrador não encontrado.', 'error');
+            redirect_to('dashboard', $destino);
+        }
+
+        db_write($db);
+
+        /* Se a pessoa alterou a própria senha, a sessão continua válida —
+         * mas o nome exibido no topo ficaria desatualizado até o próximo
+         * login. Atualiza aqui. */
+        if ((int)($_SESSION['admin_id'] ?? 0) === $adminId) {
+            $_SESSION['admin_name'] = $nome;
+        }
+
+        flash('Administrador atualizado.' . ($senha !== '' ? ' A senha foi alterada.' : ''));
+        redirect_to('dashboard', $destino);
+    }
+
+    /* Exclusão de administrador, com trava contra ficar sem ninguém. */
+    if ($action === 'delete_admin') {
+        require_admin();
+
+        $adminId = (int)($_POST['admin_id'] ?? 0);
+        $destino = ['event_id' => active_event_id($db), 'section' => 'usuarios'];
+
+        if (count($db['admins'] ?? []) <= 1) {
+            flash('Não é possível excluir o único administrador — o sistema ficaria sem acesso.', 'error');
+            redirect_to('dashboard', $destino);
+        }
+
+        if ((int)($_SESSION['admin_id'] ?? 0) === $adminId) {
+            flash('Você não pode excluir a própria conta enquanto está usando o sistema.', 'error');
+            redirect_to('dashboard', $destino);
+        }
+
+        $db['admins'] = array_values(array_filter(
+            $db['admins'] ?? [],
+            static fn($a) => (int)$a['id'] !== $adminId
+        ));
+        db_write($db);
+
+        flash('Administrador excluído.');
+        redirect_to('dashboard', $destino);
     }
 
     if ($action === 'update_event_config') {
@@ -2931,21 +3034,51 @@ function render_secao_usuarios(array $db, int $eventId): void
         </div>
 
         <!-- ---------- Administradores ---------- -->
+        <?php
+        $editId = isset($_GET['admin_edit']) ? (int)$_GET['admin_edit'] : 0;
+        $emEdicao = null;
+        foreach ($admins as $a) {
+            if ((int)$a['id'] === $editId) {
+                $emEdicao = $a;
+                break;
+            }
+        }
+        $eu = (int)($_SESSION['admin_id'] ?? 0);
+        ?>
+
         <div class="panel data-panel">
             <div class="management-head compact">
                 <h2>Administradores</h2>
             </div>
             <div class="table-wrap">
                 <table class="admin-table responsive-cards">
-                    <thead><tr><th>Nome</th><th>E-mail</th><th>Telefone</th></tr></thead>
+                    <thead><tr><th>Nome</th><th>E-mail</th><th>Telefone</th><th>Ações</th></tr></thead>
                     <tbody>
                     <?php foreach ($admins as $a): ?>
                         <tr>
-                            <td data-label="Nome"><strong><?= h($a['name']) ?></strong></td>
+                            <td data-label="Nome">
+                                <strong><?= h($a['name']) ?></strong>
+                                <?php if ((int)$a['id'] === $eu): ?>
+                                    <span class="status-pill ativo">você</span>
+                                <?php endif; ?>
+                            </td>
                             <td data-label="E-mail"><?= h($a['email']) ?></td>
                             <td data-label="Telefone">
                                 <?php $tel = (string)($a['phone'] ?? ''); ?>
                                 <?= $tel !== '' ? h(wa_telefone_exibicao(wa_telefone($tel))) : '<span class="dica">não informado</span>' ?>
+                            </td>
+                            <td data-label="Ações" class="table-actions">
+                                <a class="button small" href="?page=dashboard&section=usuarios&event_id=<?= $eventId ?>&admin_edit=<?= (int)$a['id'] ?>#form-admin">Editar</a>
+                                <?php /* Sem botão de excluir para a própria conta nem quando há
+                                         apenas um administrador — o servidor também recusa. */ ?>
+                                <?php if ((int)$a['id'] !== $eu && count($admins) > 1): ?>
+                                    <form method="post" class="em-linha"
+                                          onsubmit="return confirm('Excluir o administrador <?= h(addslashes($a['name'])) ?>?');">
+                                        <input type="hidden" name="action" value="delete_admin">
+                                        <input type="hidden" name="admin_id" value="<?= (int)$a['id'] ?>">
+                                        <button class="button small" type="submit">Excluir</button>
+                                    </form>
+                                <?php endif; ?>
                             </td>
                         </tr>
                     <?php endforeach; ?>
@@ -2954,16 +3087,39 @@ function render_secao_usuarios(array $db, int $eventId): void
             </div>
         </div>
 
-        <div class="panel form-stack compact-form">
-            <h2>Novo administrador</h2>
-            <form method="post" class="form-stack">
-                <input type="hidden" name="action" value="create_admin">
-                <label>Nome <input name="name" required maxlength="120"></label>
-                <label>E-mail <input name="email" type="email" required maxlength="180"></label>
-                <label>Telefone (WhatsApp) <input name="phone" inputmode="tel" placeholder="(92) 98888-7777"></label>
-                <label>Senha <input name="password" type="password" minlength="8" required autocomplete="new-password"></label>
+        <div class="panel form-stack compact-form" id="form-admin">
+            <h2><?= $emEdicao ? 'Editar administrador' : 'Novo administrador' ?></h2>
+            <form method="post" class="form-stack" autocomplete="off">
+                <input type="hidden" name="action" value="<?= $emEdicao ? 'update_admin' : 'create_admin' ?>">
+                <?php if ($emEdicao): ?>
+                    <input type="hidden" name="admin_id" value="<?= (int)$emEdicao['id'] ?>">
+                <?php endif; ?>
+
+                <label>Nome
+                    <input name="name" required maxlength="120" value="<?= h((string)($emEdicao['name'] ?? '')) ?>">
+                </label>
+                <label>E-mail
+                    <input name="email" type="email" required maxlength="180" value="<?= h((string)($emEdicao['email'] ?? '')) ?>">
+                </label>
+                <label>Telefone (WhatsApp)
+                    <input name="phone" inputmode="tel" placeholder="(92) 98888-7777" value="<?= h((string)($emEdicao['phone'] ?? '')) ?>">
+                </label>
+                <label>Senha
+                    <input name="password" type="password" minlength="8" autocomplete="new-password"
+                           <?= $emEdicao ? '' : 'required' ?>
+                           placeholder="<?= $emEdicao ? 'deixe em branco para manter a atual' : 'mínimo 8 caracteres' ?>">
+                </label>
+                <?php if ($emEdicao): ?>
+                    <p class="dica">A senha atual não pode ser consultada. Preencha apenas se for trocá-la.</p>
+                <?php endif; ?>
+
                 <div class="form-actions">
-                    <button class="button primary" type="submit">Cadastrar administrador</button>
+                    <button class="button primary" type="submit">
+                        <?= $emEdicao ? 'Salvar alterações' : 'Cadastrar administrador' ?>
+                    </button>
+                    <?php if ($emEdicao): ?>
+                        <a class="button" href="?page=dashboard&section=usuarios&event_id=<?= $eventId ?>">Cancelar</a>
+                    <?php endif; ?>
                 </div>
             </form>
         </div>
@@ -3074,6 +3230,26 @@ function render_secao_whatsapp(array $db, int $eventId): void
                         </li>
                     </ul>
                 </div>
+
+                <?php if (isset($_GET['diag'])): ?>
+                    <div class="panel">
+                        <h2>Diagnóstico</h2>
+                        <ul class="lista-status">
+                            <?php foreach (wa_diagnostico() as $d): ?>
+                                <li class="<?= $d['ok'] ? 'ok' : 'off' ?>">
+                                    <strong><?= h($d['etapa']) ?></strong>
+                                    <small><?= h($d['detalhe']) ?></small>
+                                </li>
+                            <?php endforeach; ?>
+                        </ul>
+                    </div>
+                <?php else: ?>
+                    <div class="panel">
+                        <h2>Diagnóstico</h2>
+                        <p class="dica">Verifica token, número e permissões sem enviar mensagem.</p>
+                        <a class="button" href="?page=dashboard&section=whatsapp&event_id=<?= $eventId ?>&diag=1">Verificar conexão</a>
+                    </div>
+                <?php endif; ?>
 
                 <div class="panel form-stack">
                     <h2>Enviar um teste</h2>
@@ -4940,6 +5116,15 @@ function render_ranking_page(): void
 
 function render_monitor_page(): void
 {
+    /* [SEGURANCA] Esta tela estava aberta a qualquer visitante e mostrava o
+     * nome de cada jurado e o quanto cada um já avaliou. É informação da
+     * organização, não da plateia — quem assiste ao festival acompanha pelo
+     * Ranking (?page=ranking), que segue público.
+     *
+     * Se for projetada num telão, basta deixar a sessão do administrador
+     * aberta naquela máquina. */
+    require_admin();
+
     $db = db_read();
     $eventId = active_event_id($db);
     $event = $eventId ? find_by_id($db['events'] ?? [], $eventId) : null;

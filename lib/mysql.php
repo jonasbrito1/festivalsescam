@@ -313,10 +313,10 @@ function mysql_sync_admins(PDO $pdo, array $itens): void
 {
     $ids = [];
     $sql = $pdo->prepare(
-        'INSERT INTO admins (id, name, email, password_hash, created_at)
-         VALUES (:id, :nome, :email, :senha, :criado)
+        'INSERT INTO admins (id, name, email, phone, password_hash, created_at)
+         VALUES (:id, :nome, :email, :fone, :senha, :criado)
          ON DUPLICATE KEY UPDATE name = VALUES(name), email = VALUES(email),
-                                 password_hash = VALUES(password_hash)'
+                                 phone = VALUES(phone), password_hash = VALUES(password_hash)'
     );
 
     foreach ($itens as $a) {
@@ -325,6 +325,7 @@ function mysql_sync_admins(PDO $pdo, array $itens): void
             ':id'     => (int) $a['id'],
             ':nome'   => (string) $a['name'],
             ':email'  => (string) $a['email'],
+            ':fone'   => (string) ($a['phone'] ?? ''),
             ':senha'  => (string) $a['password'],
             ':criado' => mysql_data($a['created_at'] ?? null) ?? date('Y-m-d H:i:s'),
         ]);
@@ -603,6 +604,7 @@ function mysql_ler_banco(): ?array
                 'id'         => (int) $r['id'],
                 'name'       => (string) $r['name'],
                 'email'      => (string) $r['email'],
+                'phone'      => (string) ($r['phone'] ?? ''),
                 'password'   => (string) $r['password_hash'],
                 'created_at' => mysql_iso($r['created_at']),
             ];
