@@ -996,7 +996,6 @@ function render_footer(): void
 
 function render_login(string $type): void
 {
-    $dbStatus = database_status();
     $defaultPanel = $type === 'judge' ? 'judge' : 'admin';
     render_header('Login');
     ?>
@@ -1096,10 +1095,8 @@ function render_login(string $type): void
                             <p>Entre em contato com a organizacao do evento.</p>
                         </div>
                     </div>
-                    <div class="db-status-card <?= h($dbStatus['state']) ?>">
-                        <strong>Status da integracao</strong>
-                        <span><?= h($dbStatus['label']) ?></span>
-                    </div>
+                    <?php /* Selo de status do banco retirado: expunha o estado
+                             da infraestrutura antes do login. */ ?>
                 </footer>
             </div>
         </div>

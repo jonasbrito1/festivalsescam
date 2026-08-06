@@ -2609,7 +2609,6 @@ function render_footer(): void
 
 function render_login(string $type): void
 {
-    $dbStatus = database_status();
     render_header('Login');
     ?>
     <section class="sesc-login">
@@ -2619,10 +2618,11 @@ function render_login(string $type): void
             <span class="gold-line"></span>
             <h1>Sistema de Notas de Jurados</h1>
             <p>Escolha seu tipo de acesso para continuar</p>
-            <div class="db-status-card <?= h($dbStatus['state']) ?>">
-                <strong>Status da integração</strong>
-                <span><?= h($dbStatus['label']) ?></span>
-            </div>
+            <?php /* O selo "Status da integração" foi retirado: informava o
+                     estado do banco a qualquer visitante, antes mesmo do
+                     login. Não ajudava quem vai entrar e sinalizava a um
+                     eventual atacante o momento em que o banco está fora.
+                     O estado da infraestrutura se acompanha pelos logs. */ ?>
         </div>
 
         <div class="login-options">
