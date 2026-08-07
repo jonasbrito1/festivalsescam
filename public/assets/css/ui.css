@@ -1961,6 +1961,185 @@ td {
     }
 }
 
+/* ---------------------------------------------------------------------------
+   9. Planilha SER SESC
+ *
+ * A grade é uma tabela comum de campos numéricos. O que ela precisa a mais é
+ * dizer, sem texto, o que está acontecendo com cada célula: salvando, salvo,
+ * recusado, ou alterado por outra pessoa.
+   ------------------------------------------------------------------------- */
+.planilha-resumo {
+    display: grid;
+    gap: var(--esp-4);
+    grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+}
+
+.planilha-resumo > div {
+    display: grid;
+    gap: 2px;
+    justify-items: start;
+}
+
+.planilha-resumo span {
+    color: var(--sesc-muted);
+    font-size: var(--t-sm);
+}
+
+.planilha-resumo strong {
+    color: var(--sesc-blue, #002f8f);
+    font-size: var(--t-xl);
+    line-height: 1.1;
+}
+
+.planilha-resumo small,
+.ser-aviso {
+    color: var(--sesc-muted);
+    font-size: var(--t-xs);
+}
+
+.ser-aviso.ok {
+    color: #1c7a4a;
+}
+
+.ser-aviso.erro {
+    color: #b3261e;
+    font-weight: 600;
+}
+
+.planilha-bloco + .planilha-bloco {
+    margin-top: var(--esp-5);
+}
+
+/* O .status-pill capitaliza cada palavra — pensado para "aberto", "ativo".
+   Aqui o selo é uma frase ("92,5 de 200") e virava "92,5 De 200". */
+.status-pill.ser-selo {
+    text-transform: none;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Campo de nota: largura suficiente para "10", centralizado, e alto o
+   bastante para ser tocado no tablet — é onde a planilha será preenchida. */
+.ser-nota {
+    width: 100%;
+    max-width: 92px;
+    min-height: 44px;
+    padding: 0 8px;
+    border: 1px solid #d7deea;
+    border-radius: var(--ui-raio);
+    font-size: var(--t-md);
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    transition: border-color var(--ui-transicao), background var(--ui-transicao),
+                box-shadow var(--ui-transicao);
+}
+
+.ser-nota:focus {
+    border-color: var(--sesc-blue, #002f8f);
+    outline: 3px solid var(--ui-foco);
+    outline-offset: 1px;
+}
+
+.ser-nota.salvando {
+    border-color: #b9c4d8;
+    background: #f4f7fc;
+}
+
+.ser-nota.salvo {
+    border-color: #3f9c6d;
+    background: #eefaf3;
+}
+
+.ser-nota.erro {
+    border-color: #b3261e;
+    background: #fdeceb;
+}
+
+/* Alteração vinda de outro computador: pisca em azul por dois segundos, para
+   a pessoa perceber que aquele número não foi ela quem digitou. */
+.ser-nota.alheio {
+    border-color: var(--sesc-blue, #002f8f);
+    box-shadow: 0 0 0 3px rgba(0, 47, 143, .14);
+}
+
+.ser-total {
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+    color: var(--sesc-blue, #002f8f);
+}
+
+.planilha-grade th,
+.planilha-grade td {
+    vertical-align: middle;
+}
+
+/* Dança e mosaico: valem para o bloco, não para a turma, então ficam fora da
+   tabela — dentro dela pareceriam mais uma linha de turma. */
+.planilha-coletivas {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: var(--esp-4);
+    margin-top: var(--esp-4);
+    padding-top: var(--esp-4);
+    border-top: 1px solid #eef1f7;
+}
+
+.planilha-coletivas label {
+    display: grid;
+    gap: 4px;
+    font-size: var(--t-sm);
+    font-weight: 600;
+}
+
+.planilha-coletivas .dica {
+    flex: 1 1 240px;
+    margin: 0;
+}
+
+.ser-form-turma,
+.ser-form-importar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: var(--esp-3);
+}
+
+.ser-form-turma label,
+.ser-form-importar label {
+    display: grid;
+    gap: 4px;
+    flex: 1 1 180px;
+    font-size: var(--t-sm);
+    font-weight: 600;
+}
+
+.ser-linha-edicao > td {
+    background: #f4f7fc;
+}
+
+.ser-nova-turma {
+    margin-top: var(--esp-4);
+}
+
+.ser-nova-turma summary {
+    padding: 8px 0;
+    color: var(--sesc-blue, #002f8f);
+    font-size: var(--t-sm);
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.ser-nova-turma[open] summary {
+    margin-bottom: var(--esp-3);
+}
+
+/* Em cartão (celular), o campo ocupa a linha toda ao lado do rótulo. */
+@media (max-width: 760px) {
+    .ser-nota {
+        max-width: none;
+    }
+}
+
 @media print {
     .app-menu-btn,
     .menu-overlay {

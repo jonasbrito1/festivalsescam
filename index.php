@@ -12,6 +12,10 @@ require_once __DIR__ . '/lib/mysql.php';
  * integracao nao estiver ligada na tela de Configuracoes. */
 require_once __DIR__ . '/lib/whatsapp.php';
 
+/* Planilha SER SESC: a PROJETO SER SESC.xlsx administrada online. Modulo
+ * proprio, sem ligacao com eventos/jurados — ver lib/planilha.php. */
+require_once __DIR__ . '/lib/planilha.php';
+
 /* ---------------------------------------------------------------------------
  * [SEGURANCA] Onde ficam os arquivos de sessao.
  *
@@ -2857,6 +2861,192 @@ function handle_post(): void
         flash('Avaliações finalizadas.');
         redirect_to('judge-panel', ['section' => 'resumo']);
     }
+
+    /* -----------------------------------------------------------------------
+     * Planilha SER SESC
+     * -------------------------------------------------------------------- */
+
+    /* Uma célula por requisição, respondida em JSON. É o que permite gravar
+       enquanto se digita sem recarregar a página inteira e sem que duas
+       pessoas editando blocos diferentes se atrapalhem. */
+    if ($action === 'ser_salvar_nota') {
+        require_admin();
+
+        $alvo = ($_POST['alvo'] ?? '') === 'bloco' ? 'bloco' : 'turma';
+        $id = (int)($_POST['id'] ?? 0);
+        $campo = (string)($_POST['campo'] ?? '');
+        $bruto = trim((string)($_POST['nota'] ?? ''));
+
+        /* Campo esvaziado é "sem nota", não zero: zero é uma nota, e tratar
+           os dois como a mesma coisa faria uma célula em branco valer ponto. */
+        $nota = null;
+        if ($bruto !== '') {
+            $numero = str_replace(',', '.', $bruto);
+
+            if (!is_numeric($numero)) {
+                json_response(['ok' => false, 'mensagem' => 'Digite um número de 0 a 10.'], 422);
+            }
+
+            $nota = (float)$numero;
+        }
+
+        $resultado = ser_gravar_nota($alvo, $id, $campo, $nota, (string)($_SESSION['admin_name'] ?? ''));
+
+        if (!$resultado['ok']) {
+            json_response($resultado + ['revisao' => ser_revisao()], 422);
+        }
+
+        json_response($resultado + ser_resumo_para_json());
+    }
+
+    if ($action === 'ser_salvar_turma') {
+        require_admin();
+        $resultado = ser_gravar_turma(
+            (int)($_POST['id'] ?? 0),
+            clean($_POST['turma'] ?? ''),
+            clean($_POST['pais'] ?? '')
+        );
+        flash($resultado['mensagem'], $resultado['ok'] ? 'success' : 'error');
+        redirect_to('dashboard', ['section' => 'planilha']);
+    }
+
+    if ($action === 'ser_criar_turma') {
+        require_admin();
+        $resultado = ser_criar_turma(
+            (int)($_POST['bloco_id'] ?? 0),
+            clean($_POST['turma'] ?? ''),
+            clean($_POST['pais'] ?? '')
+        );
+        flash($resultado['mensagem'], $resultado['ok'] ? 'success' : 'error');
+        redirect_to('dashboard', ['section' => 'planilha']);
+    }
+
+    if ($action === 'ser_excluir_turma') {
+        require_admin();
+        $resultado = ser_excluir_turma((int)($_POST['id'] ?? 0));
+        flash($resultado['mensagem'], $resultado['ok'] ? 'success' : 'error');
+        redirect_to('dashboard', ['section' => 'planilha']);
+    }
+
+    if ($action === 'ser_importar') {
+        require_admin();
+
+        $arquivo = $_FILES['planilha'] ?? null;
+
+        if (!$arquivo || ($arquivo['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            flash('Escolha um arquivo .xlsx para importar.', 'error');
+            redirect_to('dashboard', ['section' => 'planilha']);
+        }
+
+        if (!is_uploaded_file($arquivo['tmp_name'])) {
+            flash('Envio inválido.', 'error');
+            redirect_to('dashboard', ['section' => 'planilha']);
+        }
+
+        $lido = ser_xlsx_ler($arquivo['tmp_name']);
+
+        if (!$lido['ok']) {
+            flash($lido['mensagem'], 'error');
+            redirect_to('dashboard', ['section' => 'planilha']);
+        }
+
+        $aplicado = ser_xlsx_aplicar($lido['blocos'], (string)($_SESSION['admin_name'] ?? ''));
+        flash($aplicado['mensagem'], $aplicado['ok'] ? 'success' : 'error');
+        redirect_to('dashboard', ['section' => 'planilha']);
+    }
+}
+
+/**
+ * Estado da planilha para a atualização automática.
+ *
+ * Devolve só a revisão quando o navegador já tem a versão atual: é uma
+ * resposta de poucos bytes, e a grade não é redesenhada à toa por cima de
+ * quem está digitando.
+ */
+function ser_responder_estado(): void
+{
+    $revisao = ser_revisao();
+
+    if (($_GET['revisao'] ?? '') === $revisao && $revisao !== '') {
+        json_response(['ok' => true, 'mudou' => false, 'revisao' => $revisao]);
+    }
+
+    $planilha = ser_ler();
+    $celulas = [];
+
+    foreach ($planilha['blocos'] as $b) {
+        $celulas['b' . $b['id'] . '-danca'] = ser_numero_ou_vazio($b['danca']);
+        $celulas['b' . $b['id'] . '-mosaico'] = ser_numero_ou_vazio($b['mosaico']);
+
+        foreach ($b['turmas'] as $t) {
+            foreach (array_keys(SER_CRITERIOS) as $coluna) {
+                $celulas['t' . $t['id'] . '-' . $coluna] = ser_numero_ou_vazio($t[$coluna]);
+            }
+        }
+    }
+
+    json_response([
+        'ok'      => true,
+        'mudou'   => true,
+        'celulas' => $celulas,
+    ] + ser_resumo_para_json());
+}
+
+/** Envia a planilha como .xlsx e encerra a requisição. */
+function ser_responder_download(): void
+{
+    $arquivo = ser_xlsx_gerar(ser_ler());
+
+    if ($arquivo === null) {
+        flash('Não foi possível gerar o arquivo.', 'error');
+        redirect_to('dashboard', ['section' => 'planilha']);
+    }
+
+    /* O filtro de CSRF é um callback de saída: sem limpar o buffer, o HTML
+       já produzido entraria dentro do .xlsx e corromperia o arquivo. */
+    while (ob_get_level() > 0) {
+        ob_end_clean();
+    }
+
+    header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    header('Content-Disposition: attachment; filename="PROJETO SER SESC - ' . date('Y-m-d H\hi') . '.xlsx"');
+    header('Content-Length: ' . (string)filesize($arquivo));
+    header('Cache-Control: no-store');
+    readfile($arquivo);
+    @unlink($arquivo);
+    exit;
+}
+
+/** Nota para a tela: '' quando não lançada, sem zeros decorativos. */
+function ser_numero_ou_vazio($valor): string
+{
+    if ($valor === null || $valor === '') {
+        return '';
+    }
+
+    return rtrim(rtrim(number_format((float)$valor, 2, ',', ''), '0'), ',');
+}
+
+/** Totais recalculados, para o navegador atualizar os rodapés sem recarregar. */
+function ser_resumo_para_json(): array
+{
+    $planilha = ser_ler();
+    $blocos = [];
+
+    foreach ($planilha['blocos'] as $b) {
+        $turmas = [];
+        foreach ($b['turmas'] as $t) {
+            $turmas[(int)$t['id']] = (float)$t['total'];
+        }
+
+        $blocos[$b['id']] = [
+            'total_individual' => $b['total_individual'],
+            'total_geral'      => $b['total_geral'],
+            'turmas'           => $turmas,
+        ];
+    }
+
+    return ['revisao' => $planilha['revisao'], 'blocos' => $blocos];
 }
 
 /**
@@ -2891,6 +3081,7 @@ function menu_icone(string $nome): string
         'whatsapp'      => '<path d="M21 11.5a8.4 8.4 0 0 1-12.4 7.4L3 21l2.2-5.5A8.4 8.4 0 1 1 21 11.5z"/><path d="M9 9.5c0 3 2.5 5.5 5.5 5.5l1-1.4-2-1-.9.8a5 5 0 0 1-2-2l.8-.9-1-2z"/>',
         'mensagem'      => '<path d="M21 15a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2z"/><path d="M8 9h8M8 13h5"/>',
         'seta-baixo'    => '<path d="M6 9l6 6 6-6"/>',
+        'planilha'      => '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/>',
         'telefone'      => '<path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.4 2.1L8.1 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2z"/>',
     ];
 
@@ -3448,6 +3639,219 @@ function render_secao_mensagens(array $db, int $eventId): void
     <?php
 }
 
+/**
+ * Planilha SER SESC.
+ *
+ * A grade inteira é uma tabela de campos numéricos. Cada campo grava sozinho
+ * ao sair dele, e a página consulta o servidor a cada poucos segundos para
+ * refletir o que os outros lançaram — sem recarregar, que roubaria o cursor
+ * de quem está digitando.
+ */
+function render_secao_planilha(): void
+{
+    if (!ser_disponivel()) {
+        ?>
+        <section class="management-page">
+            <div class="management-head"><h2>Planilha SER SESC</h2></div>
+            <div class="panel">
+                <div class="info-note aviso">
+                    Esta tela precisa do banco de dados, que está indisponível no momento.
+                    Edição simultânea com gravação célula a célula não funciona sobre arquivo —
+                    é justamente o problema que o módulo existe para resolver.
+                </div>
+            </div>
+        </section>
+        <?php
+        return;
+    }
+
+    $planilha = ser_ler();
+    $blocos = $planilha['blocos'];
+    $edicaoId = isset($_GET['ser_turma_edit']) ? (int)$_GET['ser_turma_edit'] : 0;
+
+    $geral = 0.0;
+    $maximo = 0.0;
+    $turmasTotal = 0;
+    $turmasProntas = 0;
+
+    foreach ($blocos as $b) {
+        $geral += $b['total_geral'];
+        $maximo += $b['maximo_geral'];
+
+        foreach ($b['turmas'] as $t) {
+            $turmasTotal++;
+            $turmasProntas += $t['completa'] ? 1 : 0;
+        }
+    }
+    ?>
+    <section class="management-page planilha-ser"
+             data-ser-planilha
+             data-revisao="<?= h($planilha['revisao']) ?>"
+             data-intervalo="5">
+        <div class="management-head">
+            <h2>Planilha SER SESC</h2>
+            <div class="management-actions">
+                <a class="button" href="?page=dashboard&section=planilha&ser_exportar=1">Baixar .xlsx</a>
+            </div>
+        </div>
+
+        <div class="panel planilha-resumo">
+            <div>
+                <span>Pontuação lançada</span>
+                <strong><?= h(ser_numero_ou_vazio($geral) ?: '0') ?></strong>
+                <small>de <?= h(ser_numero_ou_vazio($maximo) ?: '0') ?> possíveis</small>
+            </div>
+            <div>
+                <span>Turmas avaliadas</span>
+                <strong><?= $turmasProntas ?>/<?= $turmasTotal ?></strong>
+                <small>com os três critérios lançados</small>
+            </div>
+            <div>
+                <span>Última alteração</span>
+                <strong data-ser-relogio><?= $planilha['atualizado'] !== ''
+                    ? h(date('d/m/Y H:i', strtotime($planilha['atualizado'])))
+                    : '—' ?></strong>
+                <small data-ser-estado>Atualiza sozinho a cada 5 segundos</small>
+            </div>
+        </div>
+
+        <?php foreach ($blocos as $bloco): ?>
+            <div class="panel data-panel planilha-bloco" data-bloco="<?= (int)$bloco['id'] ?>">
+                <div class="management-head compact">
+                    <h2><?= h($bloco['nome']) ?></h2>
+                    <span class="status-pill ser-selo <?= $bloco['total_geral'] > 0 ? 'ativo' : 'pendente' ?>"
+                          data-ser-total-bloco="<?= (int)$bloco['id'] ?>">
+                        <?= h(ser_numero_ou_vazio($bloco['total_geral']) ?: '0') ?>
+                        de <?= h(ser_numero_ou_vazio($bloco['maximo_geral'])) ?>
+                    </span>
+                </div>
+
+                <div class="table-wrap">
+                    <table class="admin-table responsive-cards planilha-grade">
+                        <thead>
+                            <tr>
+                                <th>Turma</th>
+                                <th>País</th>
+                                <?php foreach (SER_CRITERIOS as $rotulo): ?>
+                                    <th><?= h($rotulo) ?></th>
+                                <?php endforeach; ?>
+                                <th>Total</th>
+                                <th>Ações</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        <?php foreach ($bloco['turmas'] as $turma): ?>
+                            <tr>
+                                <td data-label="Turma"><strong><?= h($turma['turma']) ?></strong></td>
+                                <td data-label="País"><?= h($turma['pais']) ?></td>
+                                <?php foreach (array_keys(SER_CRITERIOS) as $coluna): ?>
+                                    <td data-label="<?= h(SER_CRITERIOS[$coluna]) ?>">
+                                        <input class="ser-nota" type="text" inputmode="decimal"
+                                               value="<?= h(ser_numero_ou_vazio($turma[$coluna])) ?>"
+                                               data-ser-celula="t<?= (int)$turma['id'] ?>-<?= h($coluna) ?>"
+                                               data-alvo="turma"
+                                               data-id="<?= (int)$turma['id'] ?>"
+                                               data-campo="<?= h($coluna) ?>"
+                                               aria-label="<?= h(SER_CRITERIOS[$coluna] . ' — ' . $turma['turma']) ?>"
+                                               placeholder="0 a 10">
+                                    </td>
+                                <?php endforeach; ?>
+                                <td data-label="Total" class="ser-total"
+                                    data-ser-total-turma="<?= (int)$turma['id'] ?>">
+                                    <?= h(ser_numero_ou_vazio($turma['total']) ?: '0') ?>
+                                </td>
+                                <td data-label="Ações" class="table-actions">
+                                    <a class="button small"
+                                       href="?page=dashboard&section=planilha&ser_turma_edit=<?= (int)$turma['id'] ?>#turma-<?= (int)$turma['id'] ?>">Editar</a>
+                                    <form method="post" class="em-linha"
+                                          onsubmit="return confirm('Remover a turma <?= h(addslashes($turma['turma'])) ?>? As notas dela serão perdidas.');">
+                                        <input type="hidden" name="action" value="ser_excluir_turma">
+                                        <input type="hidden" name="id" value="<?= (int)$turma['id'] ?>">
+                                        <button class="button small" type="submit">Excluir</button>
+                                    </form>
+                                </td>
+                            </tr>
+
+                            <?php if ($edicaoId === (int)$turma['id']): ?>
+                                <tr class="ser-linha-edicao" id="turma-<?= (int)$turma['id'] ?>">
+                                    <td colspan="<?= 4 + count(SER_CRITERIOS) ?>">
+                                        <form method="post" class="ser-form-turma">
+                                            <input type="hidden" name="action" value="ser_salvar_turma">
+                                            <input type="hidden" name="id" value="<?= (int)$turma['id'] ?>">
+                                            <label>Turma
+                                                <input name="turma" required maxlength="60"
+                                                       value="<?= h($turma['turma']) ?>">
+                                            </label>
+                                            <label>País
+                                                <input name="pais" required maxlength="60"
+                                                       value="<?= h($turma['pais']) ?>">
+                                            </label>
+                                            <button class="button primary" type="submit">Salvar</button>
+                                            <a class="button ghost"
+                                               href="?page=dashboard&section=planilha">Cancelar</a>
+                                        </form>
+                                    </td>
+                                </tr>
+                            <?php endif; ?>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="planilha-coletivas">
+                    <?php foreach (['danca' => 'Dança', 'mosaico' => 'Mosaico'] as $campo => $rotulo): ?>
+                        <label>
+                            <span><?= h($rotulo) ?></span>
+                            <input class="ser-nota" type="text" inputmode="decimal"
+                                   value="<?= h(ser_numero_ou_vazio($bloco[$campo])) ?>"
+                                   data-ser-celula="b<?= (int)$bloco['id'] ?>-<?= h($campo) ?>"
+                                   data-alvo="bloco"
+                                   data-id="<?= (int)$bloco['id'] ?>"
+                                   data-campo="<?= h($campo) ?>"
+                                   aria-label="<?= h($rotulo . ' — ' . $bloco['nome']) ?>"
+                                   placeholder="0 a 10">
+                        </label>
+                    <?php endforeach; ?>
+
+                    <p class="dica">
+                        Dança e mosaico valem para o bloco inteiro, uma nota cada,
+                        como na planilha original.
+                    </p>
+                </div>
+
+                <details class="ser-nova-turma">
+                    <summary>Adicionar turma a este bloco</summary>
+                    <form method="post" class="ser-form-turma">
+                        <input type="hidden" name="action" value="ser_criar_turma">
+                        <input type="hidden" name="bloco_id" value="<?= (int)$bloco['id'] ?>">
+                        <label>Turma <input name="turma" required maxlength="60" placeholder="5º ANO E"></label>
+                        <label>País <input name="pais" required maxlength="60" placeholder="ITÁLIA"></label>
+                        <button class="button primary" type="submit">Adicionar</button>
+                    </form>
+                </details>
+            </div>
+        <?php endforeach; ?>
+
+        <div class="panel">
+            <div class="management-head compact"><h2>Importar do Excel</h2></div>
+            <form method="post" enctype="multipart/form-data" class="ser-form-importar">
+                <input type="hidden" name="action" value="ser_importar">
+                <label>Arquivo .xlsx
+                    <input type="file" name="planilha" accept=".xlsx" required>
+                </label>
+                <button class="button primary" type="submit">Importar</button>
+            </form>
+            <p class="dica">
+                Lê a aba <strong>INDIVIDUAL</strong>: cada linha "CATEGORIA : ..." abre um bloco e,
+                abaixo dela, a turma vem na coluna A e o país na B. Turma que ainda não existe é
+                criada; nota só é sobrescrita quando o arquivo traz um número — reimportar o
+                gabarito original, onde as células dizem "0 A 10", não apaga o que já foi lançado.
+            </p>
+        </div>
+    </section>
+    <?php
+}
+
 function render_login(string $type): void
 {
     render_header('Login');
@@ -3569,6 +3973,21 @@ function render_home(): void
 function render_dashboard(): void
 {
     require_admin();
+
+    /* Duas rotas da planilha respondem antes de qualquer HTML: o download do
+       .xlsx precisa mandar os próprios cabeçalhos, e a consulta de estado é
+       chamada de poucos em poucos segundos — montar o painel inteiro para
+       devolver um resumo seria desperdício a cada chamada. */
+    if (($_GET['section'] ?? '') === 'planilha') {
+        if (isset($_GET['ser_estado'])) {
+            ser_responder_estado();
+        }
+
+        if (isset($_GET['ser_exportar'])) {
+            ser_responder_download();
+        }
+    }
+
     $db = db_read();
     $eventId = active_event_id($db);
     $section = $_GET['section'] ?? 'painel';
@@ -3609,6 +4028,7 @@ function render_dashboard(): void
         ['apuracao',      'apuracao',     'Apuração'],
         ['relatorios',    'relatorio',    'Relatórios'],
         ['placar',        'placar',       'Placar em tempo real'],
+        ['planilha',      'planilha',     'Planilha SER SESC'],
         ['exportar',      'exportar',     'Exportar notas'],
         ['usuarios',      'pessoa',       'Usuários e senhas'],
         ['whatsapp',      'whatsapp',     'WhatsApp'],
@@ -3713,6 +4133,10 @@ function render_dashboard(): void
 
     <?php if ($section === 'mensagens'): ?>
         <?php render_secao_mensagens($db, $eventId); ?>
+    <?php endif; ?>
+
+    <?php if ($section === 'planilha'): ?>
+        <?php render_secao_planilha(); ?>
     <?php endif; ?>
 
     <?php if ($section === 'painel'): ?>
