@@ -44,6 +44,31 @@ const SER_CRITERIOS = [
 /** Nota máxima de qualquer célula da planilha. */
 const SER_NOTA_MAXIMA = 10.0;
 
+/**
+ * As etapas, na ordem da aba PROGRAMAÇÃO do arquivo:
+ * INDIVIDUAL → TEMPO → DANÇA → TEMPO → MOSAICO.
+ *
+ * 'campo' null marca a etapa que não é uma nota única de grupo — a individual
+ * tem três notas por turma; as outras duas, uma nota por grupo.
+ */
+const SER_ETAPAS = [
+    'individual' => [
+        'titulo'    => 'Individual',
+        'campo'     => null,
+        'descricao' => 'Bandeira, mascote e caracterização — nota por turma, de 0 a 10 cada.',
+    ],
+    'danca' => [
+        'titulo'    => 'Dança',
+        'campo'     => 'danca',
+        'descricao' => 'Sincronia, criatividade, expressão corporal e organização — uma nota de 0 a 10 por grupo.',
+    ],
+    'mosaico' => [
+        'titulo'    => 'Mosaico',
+        'campo'     => 'mosaico',
+        'descricao' => 'Organização, impacto visual, participação coletiva e formação da imagem — uma nota de 0 a 10 por grupo.',
+    ],
+];
+
 function ser_disponivel(): bool
 {
     return mysql_ativo() && mysql_conexao() !== null;
@@ -75,7 +100,8 @@ function ser_ler(): array
 
     try {
         $blocos = $pdo->query(
-            'SELECT id, nome, danca, mosaico, atualizado, atualizado_por
+            'SELECT id, nome, categoria, turno, ordem_categoria,
+                    danca, mosaico, atualizado, atualizado_por
              FROM ser_blocos ORDER BY ordem, nome'
         )->fetchAll();
 
@@ -125,17 +151,23 @@ function ser_ler(): array
         $danca = $b['danca'] === null ? null : (float)$b['danca'];
         $mosaico = $b['mosaico'] === null ? null : (float)$b['mosaico'];
 
+        $maximoIndividual = count($lista) * SER_NOTA_MAXIMA * count(SER_CRITERIOS);
+
         $saida[] = [
             'id'                => $id,
             'nome'              => (string)$b['nome'],
+            'categoria'         => (string)($b['categoria'] ?? ''),
+            'turno'             => (string)($b['turno'] ?? ''),
+            'ordem_categoria'   => (int)($b['ordem_categoria'] ?? 0),
             'danca'             => $danca,
             'mosaico'           => $mosaico,
             'turmas'            => $lista,
             'total_individual'  => $somaIndividual,
             'total_geral'       => $somaIndividual + (float)$danca + (float)$mosaico,
-            'maximo_individual' => count($lista) * SER_NOTA_MAXIMA * count(SER_CRITERIOS),
-            'maximo_geral'      => count($lista) * SER_NOTA_MAXIMA * count(SER_CRITERIOS) + 2 * SER_NOTA_MAXIMA,
+            'maximo_individual' => $maximoIndividual,
+            'maximo_geral'      => $maximoIndividual + 2 * SER_NOTA_MAXIMA,
             'atualizado_por'    => (string)($b['atualizado_por'] ?? ''),
+            'faltando'          => ser_faltando_no_bloco($lista, $danca, $mosaico),
         ];
     }
 
@@ -144,6 +176,108 @@ function ser_ler(): array
         'revisao'    => ser_revisao(),
         'atualizado' => $ultima,
     ];
+}
+
+/**
+ * O que ainda não foi lançado neste grupo, por etapa.
+ *
+ * Vira o aviso da tela e o rodapé do relatório. Um relatório que não diz o que
+ * falta parece completo, e é assim que um número parcial acaba virando
+ * resultado oficial.
+ */
+function ser_faltando_no_bloco(array $turmas, ?float $danca, ?float $mosaico): array
+{
+    $individual = 0;
+
+    foreach ($turmas as $t) {
+        foreach (array_keys(SER_CRITERIOS) as $coluna) {
+            if ($t[$coluna] === null || $t[$coluna] === '') {
+                $individual++;
+            }
+        }
+    }
+
+    return [
+        'individual' => $individual,
+        'danca'      => $danca === null ? 1 : 0,
+        'mosaico'    => $mosaico === null ? 1 : 0,
+        'total'      => $individual + ($danca === null ? 1 : 0) + ($mosaico === null ? 1 : 0),
+    ];
+}
+
+/* ===========================================================================
+ * A DISPUTA
+ *
+ * Matutino contra vespertino, dentro de cada categoria. Os tetos do arquivo
+ * original mostram que é assim: 200 e 200 no Infantil 1, 140 e 140 no
+ * Infantil 2, 110 e 110 no Juvenil. Entre categorias os tetos diferem, então
+ * uma lista única dos seis grupos premiaria quem tem mais turmas.
+ * ======================================================================== */
+
+/**
+ * Agrupa os blocos por categoria e aponta o vencedor de cada uma.
+ *
+ * @return array<int,array{categoria:string, grupos:array, vencedor:?array,
+ *                         empate:bool, completa:bool, faltando:int}>
+ */
+function ser_disputas(array $planilha): array
+{
+    $porCategoria = [];
+
+    foreach ($planilha['blocos'] as $b) {
+        $chave = $b['categoria'] !== '' ? $b['categoria'] : 'Sem categoria';
+        $porCategoria[$chave]['ordem'] = $b['ordem_categoria'];
+        $porCategoria[$chave]['grupos'][] = $b;
+    }
+
+    uasort($porCategoria, static fn(array $a, array $b): int => $a['ordem'] <=> $b['ordem']);
+
+    $disputas = [];
+
+    foreach ($porCategoria as $categoria => $dados) {
+        $grupos = $dados['grupos'];
+
+        usort($grupos, static fn(array $a, array $b): int
+            => $b['total_geral'] <=> $a['total_geral'] ?: strcmp($a['turno'], $b['turno']));
+
+        $faltando = 0;
+        foreach ($grupos as $g) {
+            $faltando += $g['faltando']['total'];
+        }
+
+        /* Empate só é empate quando os dois primeiros têm o mesmo total E a
+           categoria está fechada. Antes disso, 0 a 0 não é empate — é o
+           placar ainda em branco. */
+        $lider = $grupos[0] ?? null;
+        $segundo = $grupos[1] ?? null;
+        $empate = $lider !== null && $segundo !== null
+            && abs($lider['total_geral'] - $segundo['total_geral']) < 0.005;
+
+        $disputas[] = [
+            'categoria' => $categoria,
+            'grupos'    => $grupos,
+            'vencedor'  => ($faltando === 0 && !$empate) ? $lider : null,
+            'empate'    => $faltando === 0 && $empate,
+            'completa'  => $faltando === 0,
+            'faltando'  => $faltando,
+        ];
+    }
+
+    return $disputas;
+}
+
+/** Quantas notas faltam na planilha inteira, por etapa. */
+function ser_pendencias(array $planilha): array
+{
+    $soma = ['individual' => 0, 'danca' => 0, 'mosaico' => 0, 'total' => 0];
+
+    foreach ($planilha['blocos'] as $b) {
+        foreach ($soma as $chave => $_) {
+            $soma[$chave] += $b['faltando'][$chave];
+        }
+    }
+
+    return $soma;
 }
 
 /** Uma turma só conta como avaliada quando as três notas foram lançadas. */
@@ -370,6 +504,194 @@ function ser_excluir_turma(int $id): array
 
         return ['ok' => false, 'mensagem' => 'Falha ao remover a turma.'];
     }
+}
+
+/* ===========================================================================
+ * RELATÓRIO EM PDF
+ *
+ * Este arquivo é o que sobra quando o módulo for retirado do sistema. Por
+ * isso ele carrega tudo: o resultado de cada categoria, as três etapas
+ * detalhadas e, quando faltar nota, um aviso dizendo exatamente o que falta.
+ * ======================================================================== */
+
+function ser_pdf_gerar(array $planilha): string
+{
+    $disputas = ser_disputas($planilha);
+    $pendencias = ser_pendencias($planilha);
+
+    $doc = pdf_novo();
+    $doc['rodape'] = 'Projeto SER SESC · gerado em ' . date('d/m/Y \à\s H:i');
+    pdf_nova_pagina($doc);
+
+    pdf_titulo($doc, 'Projeto SER SESC', 20.0);
+    pdf_paragrafo($doc, 'Resultado das três etapas: individual, dança e mosaico. '
+        . 'A disputa é entre o turno matutino e o vespertino de cada categoria.');
+
+    if ($pendencias['total'] > 0) {
+        pdf_aviso($doc, sprintf(
+            'RELATÓRIO PARCIAL — faltam %d nota(s): %d na individual, %d na dança, %d no mosaico.',
+            $pendencias['total'],
+            $pendencias['individual'],
+            $pendencias['danca'],
+            $pendencias['mosaico']
+        ));
+    } else {
+        pdf_aviso(
+            $doc,
+            'Todas as notas lançadas. Resultado final.',
+            [232, 244, 236],
+            [28, 122, 74]
+        );
+    }
+
+    /* ---- Resultado ---- */
+    pdf_titulo($doc, 'Resultado por categoria');
+
+    foreach ($disputas as $disputa) {
+        pdf_espaco($doc, 90);
+        $doc['y'] -= 16;
+        pdf_texto($doc, $disputa['categoria'], $doc['margem'], $doc['y'], 11.0, true, [0, 47, 143]);
+
+        $situacao = $disputa['empate']
+            ? 'EMPATE'
+            : ($disputa['vencedor'] !== null
+                ? 'Vencedor: ' . $disputa['vencedor']['turno']
+                : sprintf('em aberto — faltam %d nota(s)', $disputa['faltando']));
+
+        $largura = pdf_largura_texto($situacao, 9.5, true);
+        pdf_texto($doc, $situacao, $doc['largura'] - $doc['margem'] - $largura, $doc['y'], 9.5, true,
+            $disputa['completa'] ? [28, 122, 74] : [140, 110, 20]);
+        $doc['y'] -= 6;
+
+        $linhas = [];
+        foreach ($disputa['grupos'] as $grupo) {
+            $campeao = $disputa['vencedor'] !== null && $grupo['id'] === $disputa['vencedor']['id'];
+            $linhas[] = [
+                'celulas' => [
+                    $grupo['turno'] . ($campeao ? '   *' : ''),
+                    ser_numero_relatorio($grupo['total_individual']) . ' / ' . ser_numero_relatorio($grupo['maximo_individual']),
+                    ser_numero_relatorio($grupo['danca']),
+                    ser_numero_relatorio($grupo['mosaico']),
+                    ser_numero_relatorio($grupo['total_geral']) . ' / ' . ser_numero_relatorio($grupo['maximo_geral']),
+                ],
+                'destaque' => $campeao,
+                'negrito'  => $campeao,
+            ];
+        }
+
+        pdf_tabela($doc, pdf_colunas($doc, [
+            ['rotulo' => 'Turno',      'peso' => 2.2],
+            ['rotulo' => 'Individual', 'peso' => 2.0, 'alinhar' => 'direita'],
+            ['rotulo' => 'Dança',      'peso' => 1.2, 'alinhar' => 'direita'],
+            ['rotulo' => 'Mosaico',    'peso' => 1.2, 'alinhar' => 'direita'],
+            ['rotulo' => 'Total',      'peso' => 2.0, 'alinhar' => 'direita'],
+        ]), $linhas);
+    }
+
+    /* ---- Etapa 1 ---- */
+    pdf_nova_pagina($doc);
+    pdf_titulo($doc, 'Etapa 1 — Individual');
+    pdf_paragrafo($doc, SER_ETAPAS['individual']['descricao']
+        . ' A nota de cada turma soma para o grupo; as turmas não disputam entre si.');
+
+    foreach ($planilha['blocos'] as $bloco) {
+        pdf_espaco($doc, 80);
+        $doc['y'] -= 16;
+        pdf_texto($doc, $bloco['nome'], $doc['margem'], $doc['y'], 10.5, true, [0, 47, 143]);
+        $doc['y'] -= 4;
+
+        $linhas = [];
+        foreach ($bloco['turmas'] as $turma) {
+            $linhas[] = ['celulas' => [
+                $turma['turma'],
+                $turma['pais'],
+                ser_numero_relatorio($turma['bandeira']),
+                ser_numero_relatorio($turma['mascote']),
+                ser_numero_relatorio($turma['caracterizacao']),
+                ser_numero_relatorio($turma['total']),
+            ]];
+        }
+
+        $linhas[] = [
+            'celulas' => [
+                'SOMA DO GRUPO', '', '', '', '',
+                ser_numero_relatorio($bloco['total_individual']) . ' / ' . ser_numero_relatorio($bloco['maximo_individual']),
+            ],
+            'negrito' => true,
+        ];
+
+        pdf_tabela($doc, pdf_colunas($doc, [
+            ['rotulo' => 'Turma',          'peso' => 2.0],
+            ['rotulo' => 'País',           'peso' => 2.4],
+            ['rotulo' => 'Bandeira',       'peso' => 1.3, 'alinhar' => 'direita'],
+            ['rotulo' => 'Mascote',        'peso' => 1.3, 'alinhar' => 'direita'],
+            ['rotulo' => 'Caracterização', 'peso' => 1.7, 'alinhar' => 'direita'],
+            ['rotulo' => 'Total',          'peso' => 1.3, 'alinhar' => 'direita'],
+        ]), $linhas);
+    }
+
+    /* ---- Etapas 2 e 3 ---- */
+    pdf_nova_pagina($doc);
+
+    foreach (['danca' => 'Etapa 2 — Dança', 'mosaico' => 'Etapa 3 — Mosaico'] as $campo => $titulo) {
+        pdf_titulo($doc, $titulo);
+        pdf_paragrafo($doc, SER_ETAPAS[$campo]['descricao']);
+
+        $linhas = [];
+        foreach ($planilha['blocos'] as $bloco) {
+            $linhas[] = ['celulas' => [
+                $bloco['categoria'] !== '' ? $bloco['categoria'] : $bloco['nome'],
+                $bloco['turno'],
+                ser_numero_relatorio($bloco[$campo]) . ' / 10',
+            ]];
+        }
+
+        pdf_tabela($doc, pdf_colunas($doc, [
+            ['rotulo' => 'Categoria', 'peso' => 4.0],
+            ['rotulo' => 'Turno',     'peso' => 2.0],
+            ['rotulo' => 'Nota',      'peso' => 2.0, 'alinhar' => 'direita'],
+        ]), $linhas);
+    }
+
+    /* ---- Consolidado ---- */
+    pdf_titulo($doc, 'Total geral');
+    pdf_paragrafo($doc, 'Os seis grupos lado a lado. O teto difere entre categorias — '
+        . 'por isso a disputa é dentro de cada uma, e não nesta lista.');
+
+    $linhas = [];
+    foreach ($planilha['blocos'] as $bloco) {
+        $linhas[] = ['celulas' => [
+            $bloco['categoria'] !== '' ? $bloco['categoria'] : $bloco['nome'],
+            $bloco['turno'],
+            ser_numero_relatorio($bloco['total_individual']),
+            ser_numero_relatorio($bloco['danca']),
+            ser_numero_relatorio($bloco['mosaico']),
+            ser_numero_relatorio($bloco['total_geral']),
+            ser_numero_relatorio($bloco['maximo_geral']),
+        ]];
+    }
+
+    pdf_tabela($doc, pdf_colunas($doc, [
+        ['rotulo' => 'Categoria',  'peso' => 3.0],
+        ['rotulo' => 'Turno',      'peso' => 1.8],
+        ['rotulo' => 'Individual', 'peso' => 1.5, 'alinhar' => 'direita'],
+        ['rotulo' => 'Dança',      'peso' => 1.1, 'alinhar' => 'direita'],
+        ['rotulo' => 'Mosaico',    'peso' => 1.2, 'alinhar' => 'direita'],
+        ['rotulo' => 'Total',      'peso' => 1.2, 'alinhar' => 'direita'],
+        ['rotulo' => 'Máximo',     'peso' => 1.2, 'alinhar' => 'direita'],
+    ]), $linhas);
+
+    return pdf_finalizar($doc);
+}
+
+/** Número para o relatório: '—' quando a nota não foi lançada. */
+function ser_numero_relatorio($valor): string
+{
+    if ($valor === null || $valor === '') {
+        return '—';
+    }
+
+    return rtrim(rtrim(number_format((float)$valor, 2, ',', '.'), '0'), ',');
 }
 
 /* ===========================================================================
@@ -730,6 +1052,7 @@ function ser_xlsx_gerar(array $planilha): ?string
     }
 
     $abas = [
+        'RESULTADO'  => ser_aba_resultado($planilha),
         'INDIVIDUAL' => ser_aba_individual($planilha),
         'DANÇA'      => ser_aba_criterio($planilha, 'danca'),
         'MOSAICO'    => ser_aba_criterio($planilha, 'mosaico'),
@@ -750,6 +1073,56 @@ function ser_xlsx_gerar(array $planilha): ?string
     $zip->close();
 
     return $arquivo;
+}
+
+/**
+ * Aba RESULTADO — a primeira que se abre no Excel.
+ *
+ * Traz a disputa de cada categoria e, no topo, o aviso de quantas notas
+ * faltam. Um arquivo parcial que não se anuncia como parcial vira resultado
+ * oficial na mão de quem o receber depois.
+ */
+function ser_aba_resultado(array $planilha): array
+{
+    $disputas = ser_disputas($planilha);
+    $pendencias = ser_pendencias($planilha);
+
+    $linhas = [
+        ['PROJETO SER SESC — RESULTADO'],
+        ['Gerado em', date('d/m/Y H:i')],
+        [$pendencias['total'] > 0
+            ? sprintf(
+                'PARCIAL: faltam %d nota(s) — %d na individual, %d na dança, %d no mosaico',
+                $pendencias['total'],
+                $pendencias['individual'],
+                $pendencias['danca'],
+                $pendencias['mosaico']
+            )
+            : 'COMPLETO: todas as notas lançadas'],
+        [],
+        ['Categoria', 'Turno', 'Individual', 'Dança', 'Mosaico', 'Total', 'Máximo', 'Situação'],
+    ];
+
+    foreach ($disputas as $disputa) {
+        foreach ($disputa['grupos'] as $grupo) {
+            $campeao = $disputa['vencedor'] !== null && $grupo['id'] === $disputa['vencedor']['id'];
+
+            $linhas[] = [
+                $disputa['categoria'],
+                $grupo['turno'],
+                $grupo['total_individual'],
+                $grupo['danca'] === null ? '' : (float)$grupo['danca'],
+                $grupo['mosaico'] === null ? '' : (float)$grupo['mosaico'],
+                $grupo['total_geral'],
+                $grupo['maximo_geral'],
+                $campeao ? 'VENCEDOR' : ($disputa['empate'] ? 'EMPATE' : ($disputa['completa'] ? '' : 'em aberto')),
+            ];
+        }
+
+        $linhas[] = [];
+    }
+
+    return $linhas;
 }
 
 function ser_aba_individual(array $planilha): array

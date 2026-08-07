@@ -338,13 +338,14 @@
 
         Object.keys(blocos).forEach(function (id) {
             var bloco = blocos[id];
-            var selo = document.querySelector('[data-ser-total-bloco="' + id + '"]');
+
+            /* Na etapa individual o selo mostra o total daquela etapa, nao o
+               geral: dança e mosaico sao lançados em outra tela. */
+            var selo = document.querySelector('[data-ser-total-individual="' + id + '"]');
 
             if (selo) {
                 var maximo = selo.textContent.split(' de ')[1] || '';
-                selo.textContent = formatar(bloco.total_geral) + ' de ' + maximo.trim();
-                selo.classList.toggle('ativo', bloco.total_geral > 0);
-                selo.classList.toggle('pendente', bloco.total_geral <= 0);
+                selo.textContent = formatar(bloco.total_individual) + ' de ' + maximo.trim();
             }
 
             Object.keys(bloco.turmas || {}).forEach(function (turmaId) {

@@ -12,6 +12,10 @@ require_once __DIR__ . '/lib/mysql.php';
  * integracao nao estiver ligada na tela de Configuracoes. */
 require_once __DIR__ . '/lib/whatsapp.php';
 
+/* Gerador de PDF, escrito a mao: o servidor nao tem biblioteca nenhuma e o
+ * pool do PHP-FPM bloqueia exec — ver lib/pdf.php. */
+require_once __DIR__ . '/lib/pdf.php';
+
 /* Planilha SER SESC: a PROJETO SER SESC.xlsx administrada online. Modulo
  * proprio, sem ligacao com eventos/jurados — ver lib/planilha.php. */
 require_once __DIR__ . '/lib/planilha.php';
@@ -2992,28 +2996,42 @@ function ser_responder_estado(): void
     ] + ser_resumo_para_json());
 }
 
-/** Envia a planilha como .xlsx e encerra a requisição. */
+/** Envia o resultado como .xlsx ou .pdf e encerra a requisição. */
 function ser_responder_download(): void
 {
-    $arquivo = ser_xlsx_gerar(ser_ler());
+    $planilha = ser_ler();
+    $pdf = ($_GET['ser_exportar'] ?? '') === 'pdf';
+    $nome = 'PROJETO SER SESC - resultado ' . date('Y-m-d H\hi');
 
-    if ($arquivo === null) {
-        flash('Não foi possível gerar o arquivo.', 'error');
-        redirect_to('dashboard', ['section' => 'planilha']);
+    if ($pdf) {
+        $conteudo = ser_pdf_gerar($planilha);
+        $tipo = 'application/pdf';
+        $nome .= '.pdf';
+    } else {
+        $arquivo = ser_xlsx_gerar($planilha);
+
+        if ($arquivo === null) {
+            flash('Não foi possível gerar o arquivo.', 'error');
+            redirect_to('dashboard', ['section' => 'planilha', 'etapa' => 'resultado']);
+        }
+
+        $conteudo = (string)file_get_contents($arquivo);
+        @unlink($arquivo);
+        $tipo = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+        $nome .= '.xlsx';
     }
 
     /* O filtro de CSRF é um callback de saída: sem limpar o buffer, o HTML
-       já produzido entraria dentro do .xlsx e corromperia o arquivo. */
+       já produzido entraria dentro do arquivo e o corromperia. */
     while (ob_get_level() > 0) {
         ob_end_clean();
     }
 
-    header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    header('Content-Disposition: attachment; filename="PROJETO SER SESC - ' . date('Y-m-d H\hi') . '.xlsx"');
-    header('Content-Length: ' . (string)filesize($arquivo));
+    header('Content-Type: ' . $tipo);
+    header('Content-Disposition: attachment; filename="' . $nome . '"');
+    header('Content-Length: ' . (string)strlen($conteudo));
     header('Cache-Control: no-store');
-    readfile($arquivo);
-    @unlink($arquivo);
+    echo $conteudo;
     exit;
 }
 
@@ -3642,10 +3660,17 @@ function render_secao_mensagens(array $db, int $eventId): void
 /**
  * Planilha SER SESC.
  *
- * A grade inteira é uma tabela de campos numéricos. Cada campo grava sozinho
- * ao sair dele, e a página consulta o servidor a cada poucos segundos para
- * refletir o que os outros lançaram — sem recarregar, que roubaria o cursor
- * de quem está digitando.
+ * Quatro telas, na ordem da aba PROGRAMAÇÃO do arquivo original:
+ *
+ *   Individual -> Dança -> Mosaico -> Resultado
+ *
+ * Ficam separadas porque as etapas acontecem separadas no evento. Ter as três
+ * na mesma tela obrigava a procurar, no meio de 26 turmas, os dois campos de
+ * dança e mosaico daquele grupo.
+ *
+ * Cada campo grava sozinho ao sair dele, e a página consulta o servidor a
+ * cada poucos segundos para refletir o que os outros lançaram — sem
+ * recarregar, que roubaria o cursor de quem está digitando.
  */
 function render_secao_planilha(): void
 {
@@ -3665,24 +3690,14 @@ function render_secao_planilha(): void
         return;
     }
 
-    $planilha = ser_ler();
-    $blocos = $planilha['blocos'];
-    $edicaoId = isset($_GET['ser_turma_edit']) ? (int)$_GET['ser_turma_edit'] : 0;
-
-    $geral = 0.0;
-    $maximo = 0.0;
-    $turmasTotal = 0;
-    $turmasProntas = 0;
-
-    foreach ($blocos as $b) {
-        $geral += $b['total_geral'];
-        $maximo += $b['maximo_geral'];
-
-        foreach ($b['turmas'] as $t) {
-            $turmasTotal++;
-            $turmasProntas += $t['completa'] ? 1 : 0;
-        }
+    $etapa = (string)($_GET['etapa'] ?? 'individual');
+    if (!isset(SER_ETAPAS[$etapa]) && $etapa !== 'resultado') {
+        $etapa = 'individual';
     }
+
+    $planilha = ser_ler();
+    $pendencias = ser_pendencias($planilha);
+    $edicaoId = isset($_GET['ser_turma_edit']) ? (int)$_GET['ser_turma_edit'] : 0;
     ?>
     <section class="management-page planilha-ser"
              data-ser-planilha
@@ -3690,165 +3705,285 @@ function render_secao_planilha(): void
              data-intervalo="5">
         <div class="management-head">
             <h2>Planilha SER SESC</h2>
-            <div class="management-actions">
-                <a class="button" href="?page=dashboard&section=planilha&ser_exportar=1">Baixar .xlsx</a>
-            </div>
-        </div>
-
-        <div class="panel planilha-resumo">
-            <div>
-                <span>Pontuação lançada</span>
-                <strong><?= h(ser_numero_ou_vazio($geral) ?: '0') ?></strong>
-                <small>de <?= h(ser_numero_ou_vazio($maximo) ?: '0') ?> possíveis</small>
-            </div>
-            <div>
-                <span>Turmas avaliadas</span>
-                <strong><?= $turmasProntas ?>/<?= $turmasTotal ?></strong>
-                <small>com os três critérios lançados</small>
-            </div>
-            <div>
-                <span>Última alteração</span>
+            <p class="dica">Última alteração:
                 <strong data-ser-relogio><?= $planilha['atualizado'] !== ''
                     ? h(date('d/m/Y H:i', strtotime($planilha['atualizado'])))
                     : '—' ?></strong>
-                <small data-ser-estado>Atualiza sozinho a cada 5 segundos</small>
-            </div>
+                <span data-ser-estado>· atualiza sozinho a cada 5 segundos</span>
+            </p>
         </div>
 
-        <?php foreach ($blocos as $bloco): ?>
-            <div class="panel data-panel planilha-bloco" data-bloco="<?= (int)$bloco['id'] ?>">
-                <div class="management-head compact">
-                    <h2><?= h($bloco['nome']) ?></h2>
-                    <span class="status-pill ser-selo <?= $bloco['total_geral'] > 0 ? 'ativo' : 'pendente' ?>"
-                          data-ser-total-bloco="<?= (int)$bloco['id'] ?>">
-                        <?= h(ser_numero_ou_vazio($bloco['total_geral']) ?: '0') ?>
-                        de <?= h(ser_numero_ou_vazio($bloco['maximo_geral'])) ?>
+        <?php /* Passos numerados: a ordem importa e é a mesma do evento. */ ?>
+        <nav class="ser-etapas" aria-label="Etapas do projeto">
+            <?php $n = 0; foreach (SER_ETAPAS as $chave => $dados): $n++; ?>
+                <a class="<?= $etapa === $chave ? 'atual' : '' ?>"
+                   href="?page=dashboard&section=planilha&etapa=<?= h($chave) ?>"
+                   <?= $etapa === $chave ? 'aria-current="page"' : '' ?>>
+                    <span class="ser-passo"><?= $n ?></span>
+                    <span class="ser-nome"><?= h($dados['titulo']) ?></span>
+                    <?php $falta = $pendencias[$chave]; ?>
+                    <span class="ser-falta <?= $falta === 0 ? 'ok' : '' ?>">
+                        <?= $falta === 0 ? 'completa' : $falta . ' a lançar' ?>
                     </span>
-                </div>
+                </a>
+            <?php endforeach; ?>
+            <a class="<?= $etapa === 'resultado' ? 'atual' : '' ?>"
+               href="?page=dashboard&section=planilha&etapa=resultado"
+               <?= $etapa === 'resultado' ? 'aria-current="page"' : '' ?>>
+                <span class="ser-passo">★</span>
+                <span class="ser-nome">Resultado</span>
+                <span class="ser-falta <?= $pendencias['total'] === 0 ? 'ok' : '' ?>">
+                    <?= $pendencias['total'] === 0 ? 'fechado' : 'parcial' ?>
+                </span>
+            </a>
+        </nav>
 
-                <div class="table-wrap">
-                    <table class="admin-table responsive-cards planilha-grade">
-                        <thead>
-                            <tr>
-                                <th>Turma</th>
-                                <th>País</th>
-                                <?php foreach (SER_CRITERIOS as $rotulo): ?>
-                                    <th><?= h($rotulo) ?></th>
-                                <?php endforeach; ?>
-                                <th>Total</th>
-                                <th>Ações</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                        <?php foreach ($bloco['turmas'] as $turma): ?>
-                            <tr>
-                                <td data-label="Turma"><strong><?= h($turma['turma']) ?></strong></td>
-                                <td data-label="País"><?= h($turma['pais']) ?></td>
-                                <?php foreach (array_keys(SER_CRITERIOS) as $coluna): ?>
-                                    <td data-label="<?= h(SER_CRITERIOS[$coluna]) ?>">
-                                        <input class="ser-nota" type="text" inputmode="decimal"
-                                               value="<?= h(ser_numero_ou_vazio($turma[$coluna])) ?>"
-                                               data-ser-celula="t<?= (int)$turma['id'] ?>-<?= h($coluna) ?>"
-                                               data-alvo="turma"
-                                               data-id="<?= (int)$turma['id'] ?>"
-                                               data-campo="<?= h($coluna) ?>"
-                                               aria-label="<?= h(SER_CRITERIOS[$coluna] . ' — ' . $turma['turma']) ?>"
-                                               placeholder="0 a 10">
-                                    </td>
-                                <?php endforeach; ?>
-                                <td data-label="Total" class="ser-total"
-                                    data-ser-total-turma="<?= (int)$turma['id'] ?>">
-                                    <?= h(ser_numero_ou_vazio($turma['total']) ?: '0') ?>
+        <?php if ($etapa === 'resultado'): ?>
+            <?php render_ser_resultado($planilha, $pendencias); ?>
+        <?php elseif ($etapa === 'individual'): ?>
+            <?php render_ser_individual($planilha, $edicaoId); ?>
+        <?php else: ?>
+            <?php render_ser_coletiva($planilha, $etapa); ?>
+        <?php endif; ?>
+    </section>
+    <?php
+}
+
+/** Etapa 1: três notas por turma, agrupadas por grupo. */
+function render_ser_individual(array $planilha, int $edicaoId): void
+{
+    ?>
+    <p class="ser-descricao"><?= h(SER_ETAPAS['individual']['descricao']) ?>
+        A soma das turmas é a pontuação do grupo nesta etapa; as turmas não disputam entre si.</p>
+
+    <?php foreach ($planilha['blocos'] as $bloco): ?>
+        <div class="panel data-panel planilha-bloco" data-bloco="<?= (int)$bloco['id'] ?>">
+            <div class="management-head compact">
+                <h2><?= h($bloco['nome']) ?></h2>
+                <span class="status-pill ser-selo <?= $bloco['faltando']['individual'] === 0 ? 'ativo' : 'pendente' ?>"
+                      data-ser-total-individual="<?= (int)$bloco['id'] ?>">
+                    <?= h(ser_numero_ou_vazio($bloco['total_individual']) ?: '0') ?>
+                    de <?= h(ser_numero_ou_vazio($bloco['maximo_individual'])) ?>
+                </span>
+            </div>
+
+            <div class="table-wrap">
+                <table class="admin-table responsive-cards planilha-grade">
+                    <thead>
+                        <tr>
+                            <th>Turma</th>
+                            <th>País</th>
+                            <?php foreach (SER_CRITERIOS as $rotulo): ?>
+                                <th><?= h($rotulo) ?></th>
+                            <?php endforeach; ?>
+                            <th>Total</th>
+                            <th>Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($bloco['turmas'] as $turma): ?>
+                        <tr>
+                            <td data-label="Turma"><strong><?= h($turma['turma']) ?></strong></td>
+                            <td data-label="País"><?= h($turma['pais']) ?></td>
+                            <?php foreach (array_keys(SER_CRITERIOS) as $coluna): ?>
+                                <td data-label="<?= h(SER_CRITERIOS[$coluna]) ?>">
+                                    <input class="ser-nota" type="text" inputmode="decimal"
+                                           value="<?= h(ser_numero_ou_vazio($turma[$coluna])) ?>"
+                                           data-ser-celula="t<?= (int)$turma['id'] ?>-<?= h($coluna) ?>"
+                                           data-alvo="turma"
+                                           data-id="<?= (int)$turma['id'] ?>"
+                                           data-campo="<?= h($coluna) ?>"
+                                           aria-label="<?= h(SER_CRITERIOS[$coluna] . ' — ' . $turma['turma']) ?>"
+                                           placeholder="0 a 10">
                                 </td>
-                                <td data-label="Ações" class="table-actions">
-                                    <a class="button small"
-                                       href="?page=dashboard&section=planilha&ser_turma_edit=<?= (int)$turma['id'] ?>#turma-<?= (int)$turma['id'] ?>">Editar</a>
-                                    <form method="post" class="em-linha"
-                                          onsubmit="return confirm('Remover a turma <?= h(addslashes($turma['turma'])) ?>? As notas dela serão perdidas.');">
-                                        <input type="hidden" name="action" value="ser_excluir_turma">
+                            <?php endforeach; ?>
+                            <td data-label="Total" class="ser-total"
+                                data-ser-total-turma="<?= (int)$turma['id'] ?>">
+                                <?= h(ser_numero_ou_vazio($turma['total']) ?: '0') ?>
+                            </td>
+                            <td data-label="Ações" class="table-actions">
+                                <a class="button small"
+                                   href="?page=dashboard&section=planilha&etapa=individual&ser_turma_edit=<?= (int)$turma['id'] ?>#turma-<?= (int)$turma['id'] ?>">Editar</a>
+                                <form method="post" class="em-linha"
+                                      onsubmit="return confirm('Remover a turma <?= h(addslashes($turma['turma'])) ?>? As notas dela serão perdidas.');">
+                                    <input type="hidden" name="action" value="ser_excluir_turma">
+                                    <input type="hidden" name="id" value="<?= (int)$turma['id'] ?>">
+                                    <button class="button small" type="submit">Excluir</button>
+                                </form>
+                            </td>
+                        </tr>
+
+                        <?php if ($edicaoId === (int)$turma['id']): ?>
+                            <tr class="ser-linha-edicao" id="turma-<?= (int)$turma['id'] ?>">
+                                <td colspan="<?= 4 + count(SER_CRITERIOS) ?>">
+                                    <form method="post" class="ser-form-turma">
+                                        <input type="hidden" name="action" value="ser_salvar_turma">
                                         <input type="hidden" name="id" value="<?= (int)$turma['id'] ?>">
-                                        <button class="button small" type="submit">Excluir</button>
+                                        <label>Turma
+                                            <input name="turma" required maxlength="60" value="<?= h($turma['turma']) ?>">
+                                        </label>
+                                        <label>País
+                                            <input name="pais" required maxlength="60" value="<?= h($turma['pais']) ?>">
+                                        </label>
+                                        <button class="button primary" type="submit">Salvar</button>
+                                        <a class="button ghost"
+                                           href="?page=dashboard&section=planilha&etapa=individual">Cancelar</a>
                                     </form>
                                 </td>
                             </tr>
+                        <?php endif; ?>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
 
-                            <?php if ($edicaoId === (int)$turma['id']): ?>
-                                <tr class="ser-linha-edicao" id="turma-<?= (int)$turma['id'] ?>">
-                                    <td colspan="<?= 4 + count(SER_CRITERIOS) ?>">
-                                        <form method="post" class="ser-form-turma">
-                                            <input type="hidden" name="action" value="ser_salvar_turma">
-                                            <input type="hidden" name="id" value="<?= (int)$turma['id'] ?>">
-                                            <label>Turma
-                                                <input name="turma" required maxlength="60"
-                                                       value="<?= h($turma['turma']) ?>">
-                                            </label>
-                                            <label>País
-                                                <input name="pais" required maxlength="60"
-                                                       value="<?= h($turma['pais']) ?>">
-                                            </label>
-                                            <button class="button primary" type="submit">Salvar</button>
-                                            <a class="button ghost"
-                                               href="?page=dashboard&section=planilha">Cancelar</a>
-                                        </form>
-                                    </td>
-                                </tr>
-                            <?php endif; ?>
-                        <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                </div>
+            <details class="ser-nova-turma">
+                <summary>Adicionar turma a este grupo</summary>
+                <form method="post" class="ser-form-turma">
+                    <input type="hidden" name="action" value="ser_criar_turma">
+                    <input type="hidden" name="bloco_id" value="<?= (int)$bloco['id'] ?>">
+                    <label>Turma <input name="turma" required maxlength="60" placeholder="5º ANO E"></label>
+                    <label>País <input name="pais" required maxlength="60" placeholder="ITÁLIA"></label>
+                    <button class="button primary" type="submit">Adicionar</button>
+                </form>
+            </details>
+        </div>
+    <?php endforeach; ?>
 
-                <div class="planilha-coletivas">
-                    <?php foreach (['danca' => 'Dança', 'mosaico' => 'Mosaico'] as $campo => $rotulo): ?>
-                        <label>
-                            <span><?= h($rotulo) ?></span>
+    <div class="panel">
+        <div class="management-head compact"><h2>Importar do Excel</h2></div>
+        <form method="post" enctype="multipart/form-data" class="ser-form-importar">
+            <input type="hidden" name="action" value="ser_importar">
+            <label>Arquivo .xlsx <input type="file" name="planilha" accept=".xlsx" required></label>
+            <button class="button primary" type="submit">Importar</button>
+        </form>
+        <p class="dica">
+            Lê a aba <strong>INDIVIDUAL</strong>: cada linha "CATEGORIA : ..." abre um grupo e,
+            abaixo dela, a turma vem na coluna A e o país na B. Turma que ainda não existe é
+            criada; nota só é sobrescrita quando o arquivo traz um número — reimportar o
+            gabarito original, onde as células dizem "0 A 10", não apaga o que já foi lançado.
+            Atenção: a grafia dos países vem do arquivo e substitui a que estiver na tela.
+        </p>
+    </div>
+    <?php
+}
+
+/** Etapas 2 e 3: uma nota por grupo, todas na mesma tabela. */
+function render_ser_coletiva(array $planilha, string $etapa): void
+{
+    $campo = SER_ETAPAS[$etapa]['campo'];
+    ?>
+    <p class="ser-descricao"><?= h(SER_ETAPAS[$etapa]['descricao']) ?></p>
+
+    <div class="panel data-panel">
+        <div class="table-wrap">
+            <table class="admin-table responsive-cards planilha-grade">
+                <thead>
+                    <tr><th>Categoria</th><th>Turno</th><th><?= h(SER_ETAPAS[$etapa]['titulo']) ?></th></tr>
+                </thead>
+                <tbody>
+                <?php foreach ($planilha['blocos'] as $bloco): ?>
+                    <tr>
+                        <td data-label="Categoria">
+                            <strong><?= h($bloco['categoria'] !== '' ? $bloco['categoria'] : $bloco['nome']) ?></strong>
+                        </td>
+                        <td data-label="Turno"><?= h($bloco['turno']) ?></td>
+                        <td data-label="<?= h(SER_ETAPAS[$etapa]['titulo']) ?>">
                             <input class="ser-nota" type="text" inputmode="decimal"
                                    value="<?= h(ser_numero_ou_vazio($bloco[$campo])) ?>"
                                    data-ser-celula="b<?= (int)$bloco['id'] ?>-<?= h($campo) ?>"
                                    data-alvo="bloco"
                                    data-id="<?= (int)$bloco['id'] ?>"
                                    data-campo="<?= h($campo) ?>"
-                                   aria-label="<?= h($rotulo . ' — ' . $bloco['nome']) ?>"
+                                   aria-label="<?= h(SER_ETAPAS[$etapa]['titulo'] . ' — ' . $bloco['nome']) ?>"
                                    placeholder="0 a 10">
-                        </label>
-                    <?php endforeach; ?>
-
-                    <p class="dica">
-                        Dança e mosaico valem para o bloco inteiro, uma nota cada,
-                        como na planilha original.
-                    </p>
-                </div>
-
-                <details class="ser-nova-turma">
-                    <summary>Adicionar turma a este bloco</summary>
-                    <form method="post" class="ser-form-turma">
-                        <input type="hidden" name="action" value="ser_criar_turma">
-                        <input type="hidden" name="bloco_id" value="<?= (int)$bloco['id'] ?>">
-                        <label>Turma <input name="turma" required maxlength="60" placeholder="5º ANO E"></label>
-                        <label>País <input name="pais" required maxlength="60" placeholder="ITÁLIA"></label>
-                        <button class="button primary" type="submit">Adicionar</button>
-                    </form>
-                </details>
-            </div>
-        <?php endforeach; ?>
-
-        <div class="panel">
-            <div class="management-head compact"><h2>Importar do Excel</h2></div>
-            <form method="post" enctype="multipart/form-data" class="ser-form-importar">
-                <input type="hidden" name="action" value="ser_importar">
-                <label>Arquivo .xlsx
-                    <input type="file" name="planilha" accept=".xlsx" required>
-                </label>
-                <button class="button primary" type="submit">Importar</button>
-            </form>
-            <p class="dica">
-                Lê a aba <strong>INDIVIDUAL</strong>: cada linha "CATEGORIA : ..." abre um bloco e,
-                abaixo dela, a turma vem na coluna A e o país na B. Turma que ainda não existe é
-                criada; nota só é sobrescrita quando o arquivo traz um número — reimportar o
-                gabarito original, onde as células dizem "0 A 10", não apaga o que já foi lançado.
-            </p>
+                        </td>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
         </div>
-    </section>
+    </div>
+    <?php
+}
+
+/** Tela final: a disputa de cada categoria e a saída dos arquivos. */
+function render_ser_resultado(array $planilha, array $pendencias): void
+{
+    $disputas = ser_disputas($planilha);
+    ?>
+    <?php if ($pendencias['total'] > 0): ?>
+        <div class="panel">
+            <div class="info-note aviso">
+                <strong>Resultado parcial.</strong>
+                Faltam <?= (int)$pendencias['total'] ?> nota(s):
+                <?= (int)$pendencias['individual'] ?> na individual,
+                <?= (int)$pendencias['danca'] ?> na dança e
+                <?= (int)$pendencias['mosaico'] ?> no mosaico.
+                Os arquivos podem ser baixados assim mesmo — sairão marcados como parciais.
+            </div>
+        </div>
+    <?php else: ?>
+        <div class="panel">
+            <div class="info-note">
+                <strong>Todas as notas lançadas.</strong> O resultado abaixo é final.
+            </div>
+        </div>
+    <?php endif; ?>
+
+    <?php foreach ($disputas as $disputa): ?>
+        <div class="panel data-panel">
+            <div class="management-head compact">
+                <h2><?= h($disputa['categoria']) ?></h2>
+                <?php if ($disputa['empate']): ?>
+                    <span class="status-pill ser-selo pendente">Empate</span>
+                <?php elseif ($disputa['vencedor'] !== null): ?>
+                    <span class="status-pill ser-selo ativo">Vencedor: <?= h($disputa['vencedor']['turno']) ?></span>
+                <?php else: ?>
+                    <span class="status-pill ser-selo pendente">Em aberto — faltam <?= (int)$disputa['faltando'] ?></span>
+                <?php endif; ?>
+            </div>
+            <div class="table-wrap">
+                <table class="admin-table responsive-cards">
+                    <thead>
+                        <tr><th>Turno</th><th>Individual</th><th>Dança</th><th>Mosaico</th><th>Total</th></tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($disputa['grupos'] as $grupo): ?>
+                        <?php $campeao = $disputa['vencedor'] !== null && $grupo['id'] === $disputa['vencedor']['id']; ?>
+                        <tr class="<?= $campeao ? 'ser-campeao' : '' ?>">
+                            <td data-label="Turno"><strong><?= h($grupo['turno']) ?></strong></td>
+                            <td data-label="Individual">
+                                <?= h(ser_numero_ou_vazio($grupo['total_individual']) ?: '0') ?>
+                                <small>de <?= h(ser_numero_ou_vazio($grupo['maximo_individual'])) ?></small>
+                            </td>
+                            <td data-label="Dança"><?= h(ser_numero_ou_vazio($grupo['danca']) ?: '—') ?></td>
+                            <td data-label="Mosaico"><?= h(ser_numero_ou_vazio($grupo['mosaico']) ?: '—') ?></td>
+                            <td data-label="Total" class="ser-total">
+                                <?= h(ser_numero_ou_vazio($grupo['total_geral']) ?: '0') ?>
+                                <small>de <?= h(ser_numero_ou_vazio($grupo['maximo_geral'])) ?></small>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    <?php endforeach; ?>
+
+    <div class="panel">
+        <div class="management-head compact"><h2>Levar os dados embora</h2></div>
+        <div class="ser-saidas">
+            <a class="button primary" href="?page=dashboard&section=planilha&ser_exportar=pdf">Baixar PDF</a>
+            <a class="button" href="?page=dashboard&section=planilha&ser_exportar=xlsx">Baixar .xlsx</a>
+        </div>
+        <p class="dica">
+            O PDF traz o resultado de cada categoria e as três etapas detalhadas, pronto para
+            arquivar ou assinar. O .xlsx traz as mesmas informações em cinco abas —
+            RESULTADO, INDIVIDUAL, DANÇA, MOSAICO e TOTAL — para quem precisar continuar
+            trabalhando os números no Excel. Os dois marcam no topo se o resultado é parcial.
+        </p>
+    </div>
     <?php
 }
 
