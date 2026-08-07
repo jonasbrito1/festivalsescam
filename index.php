@@ -1366,6 +1366,74 @@ function require_judge(): void
     }
 }
 
+/**
+ * Coloca a sessão do jurado dentro de um evento.
+ *
+ * O event_id NUNCA é aceito cru: só passa se estiver na lista montada no
+ * login. Sem essa conferência, trocar o número na requisição daria acesso às
+ * notas de qualquer evento.
+ *
+ * A contagem regressiva de cada evento começa aqui, e não no login: os três
+ * eventos acontecem em sequência ao longo do dia, e um relógio disparado de
+ * manhã para todos deixaria o jurado sem tempo no evento da tarde.
+ */
+function judge_entrar_no_evento(array $db, int $eventoId): bool
+{
+    foreach ($_SESSION['judge_acessos'] ?? [] as $acesso) {
+        if ((int)$acesso['event_id'] !== $eventoId) {
+            continue;
+        }
+
+        $_SESSION['judge_id'] = (int)$acesso['judge_id'];
+        $_SESSION['judge_event_id'] = $eventoId;
+
+        $evento = find_by_id($db['events'] ?? [], $eventoId);
+        $_SESSION['judge_deadlines'][$eventoId] = $_SESSION['judge_deadlines'][$eventoId]
+            ?? (time() + evaluation_seconds_from_event($evento));
+
+        return true;
+    }
+
+    return false;
+}
+
+/** Os eventos que este jurado pode acessar, com o andamento de cada um. */
+function judge_eventos_disponiveis(array $db): array
+{
+    $lista = [];
+
+    foreach ($_SESSION['judge_acessos'] ?? [] as $acesso) {
+        $evento = find_by_id($db['events'] ?? [], (int)$acesso['event_id']);
+
+        if (!$evento) {
+            continue;
+        }
+
+        $participantes = items_for_event($db['participants'] ?? [], (int)$evento['id']);
+        $criterios = items_for_event($db['criteria'] ?? [], (int)$evento['id']);
+        $avaliados = [];
+
+        foreach ($db['votes'] ?? [] as $voto) {
+            if ((int)$voto['event_id'] === (int)$evento['id']
+                && (int)$voto['judge_id'] === (int)$acesso['judge_id']) {
+                $avaliados[(int)$voto['participant_id']] = true;
+            }
+        }
+
+        $lista[] = [
+            'evento'        => $evento,
+            'judge_id'      => (int)$acesso['judge_id'],
+            'participantes' => count($participantes),
+            'criterios'     => count($criterios),
+            'avaliados'     => count($avaliados),
+            'aberto'        => active_evaluation_period($evento),
+            'atual'         => (int)$evento['id'] === (int)($_SESSION['judge_event_id'] ?? 0),
+        ];
+    }
+
+    return $lista;
+}
+
 function find_by_id(array $items, int $id): ?array
 {
     foreach ($items as $item) {
@@ -1906,23 +1974,71 @@ function handle_post(): void
             redirect_to('judge-login');
         }
 
+        /* Um jurado pode servir em mais de um evento.
+         *
+         * O cadastro guarda uma linha por (jurado, evento) — a chave única da
+         * tabela é (event_id, username), não o username sozinho. Então o mesmo
+         * usuário e a mesma senha aparecem em cada evento em que a pessoa
+         * julga, e o login recolhe TODAS as linhas que conferem em vez de
+         * parar na primeira.
+         *
+         * Sem isto, quem julga três modalidades precisaria de três logins
+         * diferentes — e no meio de um festival isso vira jurado parado na
+         * porta perguntando qual senha usar. */
+        $acessos = [];
         foreach ($db['judges'] ?? [] as $judge) {
-            if (strtolower($judge['username']) === $username && password_verify($password, $judge['password'])) {
-                session_regenerate_id(true);
-                login_limpar($username);
-                $_SESSION['judge_id'] = $judge['id'];
-                $_SESSION['judge_name'] = $judge['name'];
-                $_SESSION['judge_event_id'] = $judge['event_id'];
-                $_SESSION['_ultimo_acesso'] = time();
-                $judgeEvent = find_by_id($db['events'] ?? [], (int)$judge['event_id']);
-                $_SESSION['judge_deadlines'][$judge['event_id']] = $_SESSION['judge_deadlines'][$judge['event_id']] ?? (time() + evaluation_seconds_from_event($judgeEvent));
-                redirect_to('judge-panel');
+            if (strtolower($judge['username']) !== $username
+                || !password_verify($password, $judge['password'])) {
+                continue;
             }
+
+            if (($judge['status'] ?? 'ativo') !== 'ativo') {
+                continue;
+            }
+
+            $evento = find_by_id($db['events'] ?? [], (int)$judge['event_id']);
+
+            /* Evento em rascunho não aparece: quem está montando o cadastro
+               não quer o jurado entrando antes da hora. */
+            if (!$evento || ($evento['status'] ?? '') === 'rascunho') {
+                continue;
+            }
+
+            $acessos[] = [
+                'judge_id' => (int)$judge['id'],
+                'event_id' => (int)$judge['event_id'],
+                'nome'     => (string)$judge['name'],
+            ];
+        }
+
+        if ($acessos !== []) {
+            session_regenerate_id(true);
+            login_limpar($username);
+
+            $_SESSION['judge_acessos'] = $acessos;
+            $_SESSION['judge_name'] = $acessos[0]['nome'];
+            $_SESSION['_ultimo_acesso'] = time();
+            judge_entrar_no_evento($db, $acessos[0]['event_id']);
+
+            /* Com mais de um evento, a escolha vem primeiro. */
+            redirect_to('judge-panel', count($acessos) > 1 ? ['section' => 'eventos'] : []);
         }
 
         login_registrar_falha($username);
         flash('Acesso do jurado não encontrado.', 'error');
         redirect_to('judge-login');
+    }
+
+    /* Troca de evento dentro do painel do jurado. */
+    if ($action === 'judge_trocar_evento') {
+        require_judge();
+
+        if (!judge_entrar_no_evento($db, (int)($_POST['event_id'] ?? 0))) {
+            flash('Você não tem acesso a este evento.', 'error');
+            redirect_to('judge-panel', ['section' => 'eventos']);
+        }
+
+        redirect_to('judge-panel');
     }
 
     if ($action === 'logout') {
@@ -5637,13 +5753,22 @@ function render_judge_panel(): void
     render_header('Painel do Jurado');
     ?>
     <?php
-    $itensJurado = [
+    $meusEventos = judge_eventos_disponiveis($db);
+
+    $itensJurado = [];
+
+    /* Com um evento só, a entrada "Eventos" não teria o que mostrar. */
+    if (count($meusEventos) > 1) {
+        $itensJurado[] = ['eventos', 'evento', 'Meus eventos'];
+    }
+
+    $itensJurado = array_merge($itensJurado, [
         ['votacao',       'votacao',      'Votação'],
         ['participantes', 'participante', 'Participantes'],
         ['criterios',     'criterio',     'Critérios'],
         ['resumo',        'resumo',       'Resumo de notas'],
         ['instrucoes',    'instrucao',    'Instruções'],
-    ];
+    ]);
     ?>
     <div class="judge-shell">
         <button class="menu-overlay" type="button" data-menu-overlay hidden aria-label="Fechar menu"></button>
@@ -5672,7 +5797,14 @@ function render_judge_panel(): void
                 <div>
                     <span>Evento:</span>
                     <h1><?= h($event['name'] ?? 'Evento') ?></h1>
-                    <p>▣ <?= h($event['date'] ?? '') ?> &nbsp;&nbsp; ◉ Teatro Sesc Centro</p>
+                    <p>▣ <?= h($event['date'] ?? '') ?> &nbsp;&nbsp; ◉ Teatro Sesc Centro
+                        <?php /* Atalho no cabeçalho, além do menu: é a troca que
+                                 mais acontece durante o dia do festival. */ ?>
+                        <?php if (count($meusEventos) > 1): ?>
+                            &nbsp;&nbsp;
+                            <a class="judge-trocar" href="?page=judge-panel&section=eventos">trocar modalidade</a>
+                        <?php endif; ?>
+                    </p>
                 </div>
                 <div class="judge-person">
                     <span class="avatar">○</span>
@@ -5684,6 +5816,58 @@ function render_judge_panel(): void
                     <small>Tempo disponível para avaliar todos os participantes</small>
                 </div>
             </header>
+
+            <?php /* Escolha do evento: primeira tela de quem julga mais de uma
+                     modalidade, e acessível o tempo todo pelo menu. As três
+                     acontecem em sequência no mesmo dia. */ ?>
+            <?php if ($section === 'eventos'): ?>
+                <section class="judge-list-page">
+                    <div class="management-head">
+                        <h2>Meus eventos</h2>
+                    </div>
+                    <p class="dica">
+                        Escolha a modalidade que está acontecendo agora. As notas ficam guardadas
+                        separadamente em cada uma — dá para ir e voltar sem perder nada.
+                    </p>
+
+                    <div class="judge-eventos">
+                        <?php foreach ($meusEventos as $item): ?>
+                            <?php
+                            $ev = $item['evento'];
+                            $completo = $item['participantes'] > 0
+                                && $item['avaliados'] >= $item['participantes'];
+                            ?>
+                            <form method="post" class="judge-evento <?= $item['atual'] ? 'atual' : '' ?>">
+                                <input type="hidden" name="action" value="judge_trocar_evento">
+                                <input type="hidden" name="event_id" value="<?= (int)$ev['id'] ?>">
+
+                                <div class="judge-evento-topo">
+                                    <h3><?= h($ev['name']) ?></h3>
+                                    <?php if ($item['atual']): ?>
+                                        <span class="status-pill ativo">em uso</span>
+                                    <?php elseif (!$item['aberto']): ?>
+                                        <span class="status-pill">fora do horário</span>
+                                    <?php elseif ($completo): ?>
+                                        <span class="status-pill ativo">concluído</span>
+                                    <?php else: ?>
+                                        <span class="status-pill pendente">a avaliar</span>
+                                    <?php endif; ?>
+                                </div>
+
+                                <p class="dica">
+                                    <?= (int)$item['avaliados'] ?> de <?= (int)$item['participantes'] ?>
+                                    avaliados · <?= (int)$item['criterios'] ?> critério(s)
+                                </p>
+
+                                <button class="button <?= $item['atual'] ? '' : 'primary' ?>" type="submit"
+                                        <?= $item['atual'] ? 'disabled' : '' ?>>
+                                    <?= $item['atual'] ? 'Você está aqui' : 'Entrar nesta modalidade' ?>
+                                </button>
+                            </form>
+                        <?php endforeach; ?>
+                    </div>
+                </section>
+            <?php endif; ?>
 
             <?php if ($section === 'participantes'): ?>
                 <section class="judge-list-page">

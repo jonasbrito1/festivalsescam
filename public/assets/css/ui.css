@@ -1976,6 +1976,73 @@ td {
 }
 
 /* ---------------------------------------------------------------------------
+   8f. Escolha de modalidade no painel do jurado
+ *
+ * Cartões grandes de propósito: quem usa esta tela está com o celular na mão,
+ * em pé, no meio do evento. Alvo pequeno ali custa caro.
+   ------------------------------------------------------------------------- */
+.judge-eventos {
+    display: grid;
+    gap: var(--esp-4);
+    grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
+    margin-top: var(--esp-4);
+}
+
+.judge-evento {
+    display: grid;
+    align-content: start;
+    gap: var(--esp-2);
+    padding: var(--esp-5);
+    border: 1px solid #e2e7f0;
+    border-radius: var(--ui-raio-g);
+    background: #fff;
+    box-shadow: 0 10px 26px rgba(7, 20, 61, .06);
+}
+
+.judge-evento.atual {
+    border-color: var(--sesc-blue, #002f8f);
+    box-shadow: inset 0 0 0 1px var(--sesc-blue, #002f8f);
+}
+
+.judge-evento-topo {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--esp-3);
+}
+
+.judge-evento h3 {
+    margin: 0;
+    color: var(--sesc-blue, #002f8f);
+    font-size: var(--t-lg);
+    line-height: 1.25;
+}
+
+.judge-evento .dica {
+    margin: 0;
+}
+
+.judge-evento .button {
+    width: 100%;
+    min-height: 48px;
+    margin-top: var(--esp-2);
+}
+
+.judge-evento .button[disabled] {
+    opacity: .55;
+    cursor: default;
+}
+
+/* O cabeçalho do jurado é claro — herdei branco daqui e o link sumiu no
+   fundo. Azul da marca, que é a cor de link do resto do sistema. */
+.judge-trocar {
+    color: var(--sesc-blue, #002f8f);
+    font-weight: 700;
+    text-decoration: underline;
+    white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------------------
    9. Planilha SER SESC
  *
  * A grade é uma tabela comum de campos numéricos. O que ela precisa a mais é
