@@ -1992,7 +1992,18 @@ function handle_post(): void
         $eventId = (int)($_POST['event_id'] ?? 0);
         $eventFormat = clean($_POST['event_format'] ?? 'unica');
 
-        foreach ($db['events'] ?? [] as &$event) {
+        /* A lista precisa existir ANTES do laço.
+         *
+         * Isto era `foreach ($db['events'] ?? [] as &$event)`. O `??` produz um
+         * valor temporário, e a referência `&$event` passava a apontar para
+         * essa cópia: as alterações eram gravadas nela e descartadas no fim do
+         * laço. O formulário respondia "Evento atualizado.", o redirecionamento
+         * acontecia, e nada mudava — o pior tipo de falha, porque parece
+         * sucesso. Editar pela tela de Configurações funcionava, e é
+         * justamente por já fazer esta atribuição antes. */
+        $db['events'] = $db['events'] ?? [];
+
+        foreach ($db['events'] as &$event) {
             if ((int)$event['id'] !== $eventId) {
                 continue;
             }
