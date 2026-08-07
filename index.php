@@ -3072,16 +3072,6 @@ function render_secao_usuarios(array $db, int $eventId): void
             <h2>Usuários</h2>
         </div>
 
-        <div class="panel">
-            <p class="ajuda-bloco">
-                <strong>Como as senhas funcionam.</strong>
-                O sistema guarda apenas o resumo criptográfico da senha — nunca a senha em si.
-                Por isso ela aparece <em>uma única vez</em>, no momento em que é gerada.
-                Não há como consultá-la depois: se alguém perder o acesso, gere uma nova senha,
-                que substitui a anterior e pode ser reenviada por WhatsApp.
-            </p>
-        </div>
-
         <!-- ---------- Jurados ---------- -->
         <div class="panel data-panel">
             <div class="management-head compact">

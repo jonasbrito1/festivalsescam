@@ -1546,13 +1546,6 @@ td {
     }
 }
 
-.ajuda-bloco {
-    margin: 0;
-    font-size: var(--t-sm);
-    line-height: 1.55;
-    color: var(--sesc-muted, #536078);
-}
-
 /* O .compact-form do app.css usa duas colunas, pensado para formulários
    curtos. Aqui os campos são um por linha e devem ocupar a largura toda —
    um "Access Token" de 200 caracteres num campo de 200px é ilegível. */
