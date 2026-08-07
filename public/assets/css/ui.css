@@ -25,7 +25,9 @@
     --ui-transicao: 200ms cubic-bezier(.4, 0, .2, 1);
 
     /* Escala fluida: acompanha a largura da tela sem saltos entre breakpoints */
-    --t-xs: clamp(.72rem, .69rem + .12vw, .8rem);
+    /* Piso de 12px: abaixo disso a leitura sofre, e a escala fluida estava
+       entregando 11,96px em tablet — miudo justamente em quem le de pe. */
+    --t-xs: clamp(.75rem, .71rem + .12vw, .82rem);
     --t-sm: clamp(.82rem, .79rem + .14vw, .92rem);
     --t-md: clamp(.94rem, .9rem + .18vw, 1.05rem);
     --t-lg: clamp(1.1rem, 1rem + .4vw, 1.35rem);
@@ -1973,6 +1975,222 @@ td {
         transition-duration: .01ms !important;
         scroll-behavior: auto !important;
     }
+}
+
+/* ---------------------------------------------------------------------------
+   8e2. Toque — tablets e celulares
+ *
+ * Os jurados usam tablet. O bloco de ajustes de toque que já existia era
+ * chaveado por LARGURA (até 1023.98px), e o iPad deitado tem exatamente
+ * 1024: caía fora e voltava aos tamanhos de mouse — a bolha de nota, que é
+ * o alvo mais tocado do sistema, virava um círculo de 32px.
+ *
+ * Aqui a chave é `pointer: coarse`, que pergunta pelo dedo em vez de
+ * perguntar pela largura. Pega qualquer tablet, em qualquer orientação, e
+ * não afeta quem está no computador.
+ *
+ * 44px é o mínimo recomendado para alvo de toque; 48 dá folga a quem está em
+ * pé, com o tablet numa mão.
+   ------------------------------------------------------------------------- */
+@media (pointer: coarse) {
+    /* A bolha da nota: 11 por critério, e errar o número é lançar nota
+       errada, não só um clique perdido. */
+    .score-picker label,
+    .score-picker span {
+        min-width: 48px;
+        min-height: 48px;
+        display: grid;
+        place-items: center;
+        font-size: 1.05rem;
+        font-weight: 800;
+    }
+
+    .score-picker {
+        gap: 10px;
+    }
+
+    .decimal-picker button {
+        min-width: 48px;
+        min-height: 46px;
+        font-size: 1rem;
+    }
+
+    .score-box {
+        min-height: 54px;
+        font-size: 1.2rem;
+    }
+
+    /* "small" era um botão de 34px pensado para mouse. Na lista de
+       participantes ele é o "Avaliar" — a ação mais repetida da tela. */
+    .button.small,
+    .table-actions .button,
+    .signature-pad-actions .button {
+        min-height: 44px;
+        padding-inline: var(--esp-4);
+    }
+
+    /* A caixa do checklist tinha 17x20: menor que a ponta do dedo. A linha
+       inteira vira alvo, que é como se espera tocar num item de lista. */
+    .checklist-toggle {
+        min-height: 52px;
+        gap: var(--esp-3);
+        align-items: center;
+        cursor: pointer;
+    }
+
+    .checklist-toggle input {
+        width: 26px;
+        height: 26px;
+        flex: 0 0 26px;
+    }
+
+    /* Campos e botões em geral. */
+    .judge-content :where(input, select, textarea):not([type="checkbox"]):not([type="radio"]),
+    .judge-content .button {
+        min-height: 48px;
+    }
+
+    .admin-menu a,
+    .sidebar-logout button {
+        min-height: 52px;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   8e3. O caminho até a primeira nota
+ *
+ * Medido: no iPad em retrato o primeiro critério começava em y=1075, numa
+ * tela de 1024 — ou seja, fora dela. O jurado abria o participante e
+ * precisava rolar uma tela inteira antes de poder tocar na primeira nota.
+ * Vezes 26 participantes, é rolagem que não devia existir.
+ *
+ * O que ocupava o espaço: um cartão de identificação com foto de 126px,
+ * a ordem repetida em três lugares e um cronômetro de três linhas para uma
+ * contagem de 12 horas.
+ *
+ * Nada é escondido — só compactado. Quem julga precisa CONFERIR quem está
+ * avaliando; não precisa de um pôster.
+   ------------------------------------------------------------------------- */
+@media (pointer: coarse) {
+    /* Cronômetro em uma linha. */
+    .judge-timer {
+        display: flex;
+        align-items: baseline;
+        gap: var(--esp-2);
+        flex-wrap: wrap;
+    }
+
+    .judge-timer strong {
+        font-size: var(--t-lg);
+        line-height: 1.1;
+    }
+
+    /* A terceira linha explicava o que o rótulo já diz. */
+    .judge-timer small {
+        display: none;
+    }
+
+    /* Identificação em faixa: foto menor ao lado do nome, e não acima dele. */
+    .participant-hero-card {
+        grid-template-columns: auto auto minmax(0, 1fr);
+        gap: var(--esp-3);
+        margin-inline: 0;
+        padding: var(--esp-4);
+    }
+
+    .participant-photo.large {
+        width: 68px;
+        height: 68px;
+        font-size: 22px;
+    }
+
+    .participant-hero-card h2 {
+        font-size: var(--t-lg);
+        line-height: 1.2;
+    }
+
+    /* A ordem já aparece no selo laranja ao lado da foto. */
+    .participant-hero-card p:last-of-type {
+        display: none;
+    }
+
+    /* O aviso "avalie de 0 a 10" ocupava uma coluna inteira do cartão; a
+       mesma frase está no topo do bloco de critérios. */
+    .participant-hero-card .info-note {
+        display: none;
+    }
+
+    .judge-work-head {
+        gap: var(--esp-3);
+        padding-inline: 0;
+    }
+
+    /* Cabeçalho de três colunas da tabela de critérios. Sem as colunas, ele
+       vira três linhas soltas — "Critérios de Avaliação", "Escala", "Nota" —
+       empilhadas sobre nada. Cada critério já traz os próprios rótulos. */
+    .criteria-head {
+        display: none;
+    }
+}
+
+/* Celular: a identificação não cabe em três colunas. A foto e o número da
+   ordem ficam lado a lado, o nome desce para a linha de baixo com a largura
+   inteira — em vez de espremer o nome numa faixa de 240px. */
+@media (pointer: coarse) and (max-width: 480px) {
+    .participant-hero-card {
+        grid-template-columns: auto auto 1fr;
+        align-items: center;
+        row-gap: var(--esp-3);
+        column-gap: var(--esp-2);
+    }
+
+    .participant-hero-card > div {
+        grid-column: 1 / -1;
+    }
+
+    /* O selo da ordem encosta na foto de novo. Em telas maiores ele sobrepõe
+       o canto dela por uma margem negativa; aqui a coluna própria já basta e
+       a margem negativa só o descolaria. */
+    .participant-hero-card .photo-overlap {
+        margin-left: 0;
+        align-self: center;
+        justify-self: start;
+    }
+}
+
+/* Tablet deitado: 768px de altura para caber cabeçalho, identificação e as
+   notas. Aqui o nome do próprio jurado sai do cabeçalho — é a informação
+   menos acionável da tela, e quem está segurando o tablet sabe quem é. */
+@media (pointer: coarse) and (max-height: 820px) {
+    .judge-person {
+        display: none;
+    }
+
+    .judge-event-head {
+        padding-block: var(--esp-2);
+    }
+
+    .judge-event-head h1 {
+        font-size: var(--t-lg);
+    }
+
+    .participant-photo.large {
+        width: 54px;
+        height: 54px;
+        font-size: 18px;
+    }
+
+    .participant-hero-card {
+        padding: var(--esp-3);
+    }
+}
+
+/* A tabela de participantes do jurado tem cinco colunas curtas e não precisa
+   dos 780px mínimos que a tabela do administrador pede. Com o mínimo, ela
+   estourava a largura do iPad em retrato (780 numa janela de 768) e ainda
+   por cima sem onde rolar. */
+.judge-list-page .admin-table {
+    min-width: 0;
 }
 
 /* ---------------------------------------------------------------------------

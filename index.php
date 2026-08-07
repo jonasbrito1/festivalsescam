@@ -5876,6 +5876,7 @@ function render_judge_panel(): void
                         <input type="search" placeholder="Buscar participante...">
                     </div>
                     <div class="panel data-panel">
+                        <div class="table-wrap">
                         <table class="admin-table responsive-cards">
                             <thead><tr><th>Ordem</th><th>Participante</th><th>Categoria</th><th>Situação</th><th>Ação</th></tr></thead>
                             <tbody>
@@ -5892,28 +5893,52 @@ function render_judge_panel(): void
                             <?php endforeach; ?>
                             </tbody>
                         </table>
+                        </div>
                     </div>
-                    <div class="info-note">Clique em Avaliar para lancar suas notas para o participante.</div>
+                    <div class="info-note">Toque em Avaliar para lançar suas notas para o participante.</div>
                 </section>
             <?php elseif ($section === 'criterios'): ?>
+                <?php
+                /* O peso era exibido como `peso * 20`, o que dava 20% para
+                   qualquer critério de peso 1 — e a nota de rodapé prometia
+                   que a soma daria 100%. Com três critérios dava 60%; com um
+                   só, 20%. Agora é a fatia real de cada um no total. */
+                $somaPesos = 0.0;
+                foreach ($criteria as $criterion) {
+                    $somaPesos += (float)($criterion['weight'] ?? 1);
+                }
+                ?>
                 <section class="judge-list-page">
                     <div class="management-head"><h2>Critérios de Avaliação</h2></div>
                     <div class="panel data-panel">
+                        <div class="table-wrap">
                         <table class="admin-table responsive-cards">
-                            <thead><tr><th>Ordem</th><th>Critério</th><th>Descrição</th><th>Peso</th></tr></thead>
+                            <thead><tr><th>Ordem</th><th>Critério</th><th>O que avaliar</th><th>Escala</th><th>Peso</th></tr></thead>
                             <tbody>
                             <?php foreach ($criteria as $index => $criterion): ?>
                                 <tr>
                                     <td data-label="Ordem"><?= $index + 1 ?></td>
-                                    <td data-label="Critério"><?= h($criterion['name']) ?></td>
-                                    <td data-label="Descrição">Qualidade avaliada pelo jurado durante a apresentação.</td>
-                                    <td data-label="Peso"><?= number_format((float)$criterion['weight'] * 20, 0, ',', '.') ?>%</td>
+                                    <td data-label="Critério"><strong><?= h($criterion['name']) ?></strong></td>
+                                    <td data-label="O que avaliar">
+                                        <?= h(($criterion['description'] ?? '') !== ''
+                                            ? $criterion['description']
+                                            : 'Avaliação do participante neste critério.') ?>
+                                    </td>
+                                    <td data-label="Escala">0,0 a 10,0</td>
+                                    <td data-label="Peso"><?= $somaPesos > 0
+                                        ? number_format((float)($criterion['weight'] ?? 1) / $somaPesos * 100, 0, ',', '.')
+                                        : '0' ?>%</td>
                                 </tr>
                             <?php endforeach; ?>
                             </tbody>
                         </table>
+                        </div>
                     </div>
-                    <div class="info-note">A soma dos pesos dos critérios deve ser igual a 100%.</div>
+                    <div class="info-note">
+                        <?= count($criteria) === 1
+                            ? 'Este evento tem um critério único: a nota que você lançar é a nota final do grupo.'
+                            : 'A nota final é a soma das notas de todos os critérios.' ?>
+                    </div>
                 </section>
             <?php elseif ($section === 'resumo'): ?>
                 <section class="judge-list-page">
