@@ -1286,6 +1286,133 @@ td {
 }
 
 /* ---------------------------------------------------------------------------
+   8e. Placar em tempo real — colunas de média e total
+   ------------------------------------------------------------------------- */
+.scoreboard-row {
+    display: grid;
+    grid-template-columns: 3.5rem minmax(0, 1fr) 5.5rem 7rem 9rem;
+    align-items: center;
+    /* Folga generosa entre Média e Total: colados, "9,91" e "326,90" eram
+       lidos como um número só. */
+    gap: clamp(var(--esp-4), 2vw, var(--esp-6));
+}
+
+.scoreboard-row i,
+.scoreboard-row b,
+.scoreboard-row em {
+    font-style: normal;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.scoreboard-row b {
+    font-size: var(--t-lg);
+    font-weight: 800;
+}
+
+.scoreboard-row em {
+    opacity: .85;
+}
+
+.scoreboard-row.cabecalho {
+    font-size: var(--t-xs);
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    opacity: .65;
+    font-weight: 700;
+}
+
+.scoreboard-row.cabecalho b,
+.scoreboard-row.cabecalho em {
+    font-size: var(--t-xs);
+    font-weight: 700;
+}
+
+.placar-legenda {
+    margin-top: var(--esp-4);
+    line-height: 1.6;
+}
+
+/* No celular a linha vira bloco: nome em cima, números embaixo com rótulo.
+   Cinco colunas em 390px deixariam os números ilegíveis. */
+@media (max-width: 760px) {
+    .scoreboard-row {
+        grid-template-columns: 3rem minmax(0, 1fr);
+        row-gap: var(--esp-2);
+    }
+
+    .scoreboard-row.cabecalho {
+        display: none;
+    }
+
+    .scoreboard-row i,
+    .scoreboard-row b,
+    .scoreboard-row em {
+        grid-column: 2;
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        /* O total é um número grande e ocupa quase toda a linha; sem esta
+           folga mínima ele encosta no próprio rótulo. */
+        gap: var(--esp-4);
+        text-align: left;
+        font-size: var(--t-sm);
+    }
+
+    .scoreboard-row i::before,
+    .scoreboard-row b::before,
+    .scoreboard-row em::before {
+        flex: 0 0 auto;
+    }
+
+    .scoreboard-row b {
+        font-size: var(--t-md);
+    }
+
+    .scoreboard-row i::before,
+    .scoreboard-row b::before,
+    .scoreboard-row em::before {
+        content: attr(data-rotulo);
+        font-weight: 600;
+        opacity: .7;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   8f. Foto do participante no formulário
+   ------------------------------------------------------------------------- */
+.foto-atual {
+    display: flex;
+    align-items: center;
+    gap: var(--esp-4);
+    padding: var(--esp-3);
+    border: 1px solid var(--line, #dde3ec);
+    border-radius: var(--ui-raio);
+    background: rgba(15, 23, 42, .02);
+}
+
+.foto-atual img {
+    width: 88px;
+    height: 88px;
+    flex: 0 0 88px;
+    object-fit: cover;
+    border-radius: var(--ui-raio);
+    border: 1px solid var(--line, #dde3ec);
+    background: #fff;
+}
+
+.foto-atual > div {
+    display: grid;
+    gap: var(--esp-2);
+    min-width: 0;
+}
+
+.foto-atual .caixa {
+    margin: 0;
+    font-size: var(--t-sm);
+}
+
+/* ---------------------------------------------------------------------------
    9. Grades que se adaptam sozinhas
    ------------------------------------------------------------------------- */
 .metric-grid,

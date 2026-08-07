@@ -1081,10 +1081,38 @@ function initials(string $name): string
     return $first . ($second ?: '');
 }
 
+/**
+ * Apaga com segurança a foto de um participante.
+ *
+ * Só remove dentro da pasta de fotos: o caminho vem do banco, mas um valor
+ * adulterado ali não pode virar exclusão de arquivo do sistema.
+ */
+function remover_foto_participante(string $caminhoRelativo): void
+{
+    if ($caminhoRelativo === '' || !str_starts_with($caminhoRelativo, 'public/uploads/participants/')) {
+        return;
+    }
+
+    $alvo = realpath(__DIR__ . '/' . $caminhoRelativo);
+    $base = realpath(PARTICIPANT_UPLOAD_DIR);
+
+    if ($alvo && $base && str_starts_with($alvo, $base . DIRECTORY_SEPARATOR) && is_file($alvo)) {
+        @unlink($alvo);
+    }
+}
+
 function upload_participant_photo(int $participantId): string
 {
+    /* Antes, sem arquivo enviado, esta função devolvia o campo "Ou URL da
+     * foto". Esse campo era `type="url"` e vinha preenchido com o caminho
+     * local da imagem (public/uploads/...), que não é uma URL válida — o
+     * navegador barrava o envio e o formulário simplesmente não salvava,
+     * sem dizer por quê.
+     *
+     * O campo foi retirado. Sem arquivo novo, devolve vazio; quem chama
+     * decide manter a foto anterior. */
     if (empty($_FILES['photo']['tmp_name']) || !is_uploaded_file($_FILES['photo']['tmp_name'])) {
-        return clean($_POST['photo_url'] ?? '');
+        return '';
     }
 
     /* [SEGURANCA] A extensao era lida do nome enviado pelo usuario. A lista
@@ -1382,17 +1410,33 @@ function ranking_for_event(array $db, int $eventId): array
 
         $total = 0;
         $judgeCount = 0;
+        /* Soma bruta de nota × peso, de todos os jurados e critérios.
+         * Diferente da média: cresce conforme mais jurados avaliam, e é o
+         * número que a organização costuma acompanhar no placar. */
+        $pontosTotais = 0.0;
+        $notasLancadas = 0;
+
         foreach ($judgeScores as $score) {
+            $pontosTotais += (float)($score['points'] ?? 0);
             if (($score['weights'] ?? 0) > 0) {
                 $total += $score['points'] / $score['weights'];
                 $judgeCount++;
             }
         }
 
+        foreach ($participantVotes as $vote) {
+            if (isset($criteriaById[(int)$vote['criterion_id']])) {
+                $notasLancadas++;
+            }
+        }
+
         $ranking[] = [
             'participant' => $participant,
+            // Média ponderada por jurado, promediada entre os jurados.
             'score' => $judgeCount > 0 ? $total / $judgeCount : 0,
+            'total_points' => $pontosTotais,
             'judge_count' => $judgeCount,
+            'vote_count' => $notasLancadas,
         ];
     }
 
@@ -2001,6 +2045,9 @@ function handle_post(): void
             'id' => next_id($db, 'criteria'),
             'event_id' => $eventId,
             'name' => clean($_POST['name'] ?? ''),
+            // A coluna Descrição já existia na tabela, mas com texto fixo:
+            // não havia campo para preenchê-la.
+            'description' => mb_substr(clean($_POST['description'] ?? ''), 0, 255),
             'weight' => max((float)($_POST['weight'] ?? 1), 0.1),
         ];
         db_write($db);
@@ -2021,6 +2068,7 @@ function handle_post(): void
 
             $eventId = (int)$criterion['event_id'];
             $db['criteria'][$index]['name'] = clean($_POST['name'] ?? '');
+            $db['criteria'][$index]['description'] = mb_substr(clean($_POST['description'] ?? ''), 0, 255);
             $db['criteria'][$index]['weight'] = max((float)($_POST['weight'] ?? 1), 0.1);
             $updated = true;
             break;
@@ -2193,7 +2241,24 @@ function handle_post(): void
             $db['participants'][$index]['category'] = clean($_POST['category'] ?? '');
             $db['participants'][$index]['song'] = clean($_POST['song'] ?? '');
             $db['participants'][$index]['order'] = (int)($_POST['order'] ?? 0);
-            $db['participants'][$index]['photo'] = $updatedPhoto !== '' ? $updatedPhoto : $existingPhoto;
+
+            /* Regra da foto, nesta ordem:
+             *   1. marcou "remover"  -> apaga a imagem do disco e limpa
+             *   2. enviou arquivo    -> passa a valer o novo
+             *   3. nada              -> mantém o que já estava */
+            if (isset($_POST['remover_foto'])) {
+                remover_foto_participante($existingPhoto);
+                $db['participants'][$index]['photo'] = '';
+            } elseif ($updatedPhoto !== '') {
+                // Troca de formato (jpg -> png) deixaria o arquivo antigo órfão.
+                if ($existingPhoto !== '' && $existingPhoto !== $updatedPhoto) {
+                    remover_foto_participante($existingPhoto);
+                }
+                $db['participants'][$index]['photo'] = $updatedPhoto;
+            } else {
+                $db['participants'][$index]['photo'] = $existingPhoto;
+            }
+
             $updated = true;
             break;
         }
@@ -3907,8 +3972,36 @@ function render_dashboard(): void
                 <label>Categoria <input name="category" placeholder="Solo, grupo, instrumental" value="<?= h($participantToEdit['category'] ?? '') ?>"></label>
                 <label>Música <input name="song" value="<?= h($participantToEdit['song'] ?? '') ?>"></label>
                 <label>Ordem <input name="order" type="number" min="0" value="<?= h(isset($participantToEdit['order']) ? (string)$participantToEdit['order'] : '') ?>"></label>
-                <label>Foto do participante <input name="photo" type="file" accept="image/png,image/jpeg,image/webp"></label>
-                <label>Ou URL da foto <input name="photo_url" type="url" placeholder="https://..." value="<?= h($participantToEdit['photo'] ?? '') ?>"></label>
+
+                <?php
+                /* Foto atual + envio. O campo "Ou URL da foto" foi retirado:
+                   quem cadastra escolhe um arquivo, e não deveria precisar
+                   saber que existe um caminho por trás. */
+                $fotoAtual = (string)($participantToEdit['photo'] ?? '');
+                $temFoto = $fotoAtual !== '' && is_file(__DIR__ . '/' . $fotoAtual);
+                ?>
+
+                <?php if ($temFoto): ?>
+                    <div class="foto-atual">
+                        <img src="<?= h($fotoAtual) ?>?v=<?= @filemtime(__DIR__ . '/' . $fotoAtual) ?: 0 ?>" alt="Foto de <?= h($participantToEdit['name'] ?? '') ?>">
+                        <div>
+                            <strong>Foto cadastrada</strong>
+                            <label class="caixa">
+                                <input type="checkbox" name="remover_foto" value="1">
+                                Remover a foto
+                            </label>
+                        </div>
+                    </div>
+                <?php endif; ?>
+
+                <label>
+                    <?= $temFoto ? 'Trocar a foto' : 'Foto do participante' ?>
+                    <input name="photo" type="file" accept="image/png,image/jpeg,image/webp">
+                </label>
+                <p class="dica">
+                    JPG, PNG ou WEBP, até 5 MB.
+                    <?= $temFoto ? 'Deixe em branco para manter a foto atual.' : '' ?>
+                </p>
                 <div class="form-actions">
                     <?php if ($participantToEdit): ?>
                         <a class="button ghost" href="?page=dashboard&section=participantes&event_id=<?= $eventId ?>#novo-participante">Cancelar edição</a>
@@ -3946,7 +4039,7 @@ function render_dashboard(): void
                                 <td data-label="Ordem"><?= $index + 1 ?></td>
                                 <td data-label="Critério"><?= h($criterion['name']) ?></td>
                                 <td data-label="Peso (%)"><?= number_format((float)$criterion['weight'] * 20, 0, ',', '.') ?>%</td>
-                                <td data-label="Descrição">Avaliação do participante neste critério.</td>
+                                <td data-label="Descrição"><?= h(($criterion['description'] ?? '') !== '' ? $criterion['description'] : 'Avaliação do participante neste critério.') ?></td>
                                 <td data-label="Ações">
                                     <div class="table-actions">
                                         <a class="icon-action" href="?page=dashboard&section=criterios&event_id=<?= $eventId ?>&criterion_edit=<?= (int)$criterion['id'] ?>#novo-criterio">Editar</a>
@@ -3974,6 +4067,11 @@ function render_dashboard(): void
                     <input type="hidden" name="criterion_id" value="<?= (int)$criterionToEdit['id'] ?>">
                 <?php endif; ?>
                 <label>Nome <input required name="name" placeholder="Originalidade" value="<?= h($criterionToEdit['name'] ?? '') ?>"></label>
+                <label>Descrição
+                    <textarea name="description" rows="2" maxlength="255"
+                              placeholder="O que o jurado deve observar neste critério"><?= h($criterionToEdit['description'] ?? '') ?></textarea>
+                </label>
+                <p class="dica">Aparece para o jurado durante a votação. Até 255 caracteres.</p>
                 <label>Peso <input required name="weight" type="number" min="0.1" step="0.1" value="<?= h(isset($criterionToEdit['weight']) ? (string)$criterionToEdit['weight'] : '1') ?>"></label>
                 <div class="form-actions">
                     <?php if ($criterionToEdit): ?>
@@ -4144,17 +4242,30 @@ function render_dashboard(): void
                 <a class="button ghost" href="?page=dashboard&section=placar&event_id=<?= $eventId ?>">Atualizar</a>
             </div>
             <div class="scoreboard-list">
+                <div class="scoreboard-row cabecalho">
+                    <strong>#</strong>
+                    <span>Participante</span>
+                    <i>Jurados</i>
+                    <b>Média</b>
+                    <em>Total</em>
+                </div>
                 <?php foreach ($ranking as $index => $row): ?>
-                    <div class="scoreboard-row">
+                    <div class="scoreboard-row<?= $index === 0 ? ' lider' : '' ?>">
                         <strong><?= $index + 1 ?>º</strong>
                         <span><?= h($row['participant']['name']) ?></span>
-                        <em><?= number_format((float)$row['score'], 2, ',', '.') ?></em>
+                        <i data-rotulo="Jurados"><?= (int)($row['judge_count'] ?? 0) ?></i>
+                        <b data-rotulo="Média"><?= number_format((float)$row['score'], 2, ',', '.') ?></b>
+                        <em data-rotulo="Total"><?= number_format((float)($row['total_points'] ?? 0), 2, ',', '.') ?></em>
                     </div>
                 <?php endforeach; ?>
                 <?php if (!$ranking): ?>
-                    <div class="scoreboard-row"><strong>-</strong><span>Sem notas lancadas ainda</span><em>0,00</em></div>
+                    <div class="scoreboard-row"><strong>-</strong><span>Sem notas lançadas ainda</span><i>0</i><b>0,00</b><em>0,00</em></div>
                 <?php endif; ?>
             </div>
+            <p class="dica placar-legenda">
+                <strong>Média</strong>: média ponderada de cada jurado, promediada entre os jurados — não cresce com mais jurados.
+                <strong>Total</strong>: soma de nota × peso de todos os jurados — cresce a cada avaliação. A classificação segue a média.
+            </p>
         </section>
     <?php endif; ?>
 
@@ -4378,7 +4489,7 @@ function render_dashboard(): void
                                 <thead><tr><th>Ordem</th><th>Critério</th><th>Descrição</th><th>Peso (%)</th></tr></thead>
                                 <tbody>
                                     <?php foreach ($criteria as $index => $criterion): ?>
-                                        <tr><td data-label="Ordem"><?= $index + 1 ?></td><td data-label="Critério"><?= h($criterion['name']) ?></td><td data-label="Descrição">Avaliação do participante neste critério.</td><td data-label="Peso (%)"><?= number_format((float)$criterion['weight'] * 20, 0, ',', '.') ?>%</td></tr>
+                                        <tr><td data-label="Ordem"><?= $index + 1 ?></td><td data-label="Critério"><?= h($criterion['name']) ?></td><td data-label="Descrição"><?= h(($criterion['description'] ?? '') !== '' ? $criterion['description'] : 'Avaliação do participante neste critério.') ?></td><td data-label="Peso (%)"><?= number_format((float)$criterion['weight'] * 20, 0, ',', '.') ?>%</td></tr>
                                     <?php endforeach; ?>
                                     <tr class="total-row"><td data-label="Resumo" colspan="3">Total dos Pesos</td><td data-label="Peso Total">100%</td></tr>
                                 </tbody>
@@ -4861,7 +4972,7 @@ function render_judge_panel(): void
                             <div class="criterion-row">
                                 <div class="criterion-name">
                                     <?= card_icone('estrela', 'blue') ?>
-                                    <div><strong><?= h($criterion['name']) ?></strong><small>Avaliação do participante neste critério.</small></div>
+                                    <div><strong><?= h($criterion['name']) ?></strong><small><?= h(($criterion['description'] ?? '') !== '' ? $criterion['description'] : 'Avaliação do participante neste critério.') ?></small></div>
                                 </div>
                                 <div class="score-picker-wrap">
                                     <span class="score-label-mobile">Escala</span>
