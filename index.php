@@ -5806,14 +5806,54 @@ function render_judge_panel(): void
                         <?php endif; ?>
                     </p>
                 </div>
-                <div class="judge-person">
-                    <span class="avatar">○</span>
-                    <div><span>Jurado:</span><strong><?= h($_SESSION['judge_name'] ?? '') ?></strong><small>Jurado</small></div>
-                </div>
+                <?php $juradoNome = (string)($_SESSION['judge_name'] ?? 'Jurado'); ?>
+
                 <div class="judge-timer">
-                    <span>Tempo restante para avaliação</span>
+                    <span>Tempo restante</span>
                     <strong id="judge-timer" data-deadline="<?= h(date('c', $deadline)) ?>"><?= h($timerText) ?></strong>
-                    <small>Tempo disponível para avaliar todos os participantes</small>
+                </div>
+
+                <?php /* Mesmo menu de conta do administrador. O círculo vazio que
+                         estava aqui não clicava em nada e não dizia de quem era a
+                         sessão — num tablet passado de mão em mão entre jurados,
+                         é a primeira coisa que se precisa conferir. */ ?>
+                <div class="admin-profile" data-perfil>
+                    <button class="perfil-gatilho" type="button" data-perfil-botao
+                            aria-haspopup="true" aria-expanded="false" aria-controls="menu-jurado">
+                        <span class="avatar" aria-hidden="true"><?= h(perfil_iniciais($juradoNome)) ?></span>
+                        <span class="perfil-quem">
+                            <strong><?= h($juradoNome) ?></strong>
+                            <small>Jurado</small>
+                        </span>
+                        <?= menu_icone('seta-baixo') ?>
+                        <span class="sr-only">Abrir menu da conta</span>
+                    </button>
+
+                    <div class="perfil-menu" id="menu-jurado" hidden>
+                        <div class="perfil-cabeca">
+                            <span class="avatar" aria-hidden="true"><?= h(perfil_iniciais($juradoNome)) ?></span>
+                            <div>
+                                <strong><?= h($juradoNome) ?></strong>
+                                <span class="status-pill ativo">Jurado</span>
+                            </div>
+                        </div>
+
+                        <ul class="perfil-dados">
+                            <li><?= menu_icone('evento') ?><span><?= h($event['name'] ?? 'Evento') ?></span></li>
+                            <li><?= menu_icone('participante') ?><span><?= count($participants) ?> participante(s) · <?= count($criteria) ?> critério(s)</span></li>
+                        </ul>
+
+                        <?php if (count($meusEventos) > 1): ?>
+                            <a class="perfil-acao" href="?page=judge-panel&section=eventos"><?= menu_icone('evento') ?><span>Trocar modalidade</span></a>
+                        <?php endif; ?>
+
+                        <a class="perfil-acao" href="?page=judge-panel&section=instrucoes"><?= menu_icone('instrucao') ?><span>Instruções</span></a>
+
+                        <form method="post" class="perfil-acao-form">
+                            <input type="hidden" name="action" value="logout">
+                            <button class="perfil-acao sair" type="submit"><?= menu_icone('sair') ?><span>Sair da conta</span></button>
+                        </form>
+                    </div>
                 </div>
             </header>
 

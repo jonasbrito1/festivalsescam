@@ -740,11 +740,15 @@ body {
         gap: 4px;
     }
 
-    /* Nesta largura o cabecalho quebra a linha e o perfil desce para a
-       esquerda. Ancorada pela direita, a gaveta de 300px saia inteira para
-       fora da tela (do -206 ao 94 numa janela de 390). Aqui ela abre para o
-       lado de dentro. */
-    .perfil-menu {
+    /* No cabeçalho do ADMINISTRADOR, nesta largura, a linha quebra e o perfil
+       desce para a esquerda. Ancorada pela direita, a gaveta de 300px saía
+       inteira para fora da tela (do -206 ao 94 numa janela de 390); aqui ela
+       abre para o lado de dentro.
+     *
+     * A regra é escopada ao .admin-top de propósito. No cabeçalho do JURADO o
+     * perfil fica à direita, e este mesmo `left: 0` jogava a gaveta para fora
+     * pelo outro lado. Cada cabeçalho abre para onde tem espaço. */
+    .admin-top .perfil-menu {
         left: 0;
         right: auto;
     }
@@ -2162,7 +2166,8 @@ td {
    notas. Aqui o nome do próprio jurado sai do cabeçalho — é a informação
    menos acionável da tela, e quem está segurando o tablet sabe quem é. */
 @media (pointer: coarse) and (max-height: 820px) {
-    .judge-person {
+    /* Só as iniciais no gatilho: o nome completo continua dentro do menu. */
+    .judge-event-head .perfil-quem {
         display: none;
     }
 
@@ -2258,6 +2263,43 @@ td {
     font-weight: 700;
     text-decoration: underline;
     white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------------------
+   8f2. Cronômetro do jurado
+ *
+ * Era um bloco de três linhas com um número enorme, ocupando um terço do
+ * cabeçalho. A contagem hoje é de 12 horas e recomeça a cada login — não é
+ * uma informação para se olhar o tempo todo. Vira um selo discreto, ainda
+ * visível, mas sem disputar espaço com o nome do participante.
+   ------------------------------------------------------------------------- */
+.judge-event-head .judge-timer {
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--esp-2);
+    padding: 6px 12px;
+    border: 1px solid #e2e7f0;
+    border-radius: 999px;
+    background: #f7f9fd;
+    margin-left: auto;
+}
+
+.judge-event-head .judge-timer span {
+    color: var(--sesc-muted);
+    font-size: var(--t-xs);
+    font-weight: 600;
+}
+
+.judge-event-head .judge-timer strong {
+    color: var(--sesc-blue, #002f8f);
+    font-size: var(--t-md);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.2;
+}
+
+/* O menu da conta no cabeçalho do jurado não cresce junto com a barra. */
+.judge-event-head .admin-profile {
+    margin-left: var(--esp-2);
 }
 
 /* ---------------------------------------------------------------------------
