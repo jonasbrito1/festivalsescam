@@ -1187,7 +1187,11 @@ td {
  * tema, com a barra de topo indevida e os botoes sem fundo (texto branco sobre
  * branco). Pelo link ?page=admin-login funcionava. Esta regra fecha a lacuna.
    ------------------------------------------------------------------------- */
-.page-home {
+/* A tela de troca de senha obrigatória reaproveita esta mesma moldura e caiu
+   na mesma lacuna descrita acima: sem a classe na lista, aparecia sem tema,
+   com a barra de topo que a tela de acesso esconde. */
+.page-home,
+.page-trocar-senha {
     --sesc-blue: #002f8f;
     --sesc-blue-dark: #00247a;
     --sesc-yellow: #ffc400;
@@ -1196,7 +1200,8 @@ td {
     background: #f7f9fd;
 }
 
-.page-home .topbar {
+.page-home .topbar,
+.page-trocar-senha .topbar {
     display: none;
 }
 
@@ -1267,7 +1272,8 @@ td {
    ------------------------------------------------------------------------- */
 .page-home main,
 .page-admin-login main,
-.page-judge-login main {
+.page-judge-login main,
+.page-trocar-senha main {
     width: 100%;
     max-width: none;
     margin: 0;
@@ -1479,6 +1485,14 @@ td {
 .aba-radio:focus-visible ~ .login-abas label[for="aba-jurado"] {
     outline: 3px solid var(--ui-foco);
     outline-offset: 2px;
+}
+
+/* A troca de senha tem três campos, um a mais que o login, e por isso encosta
+   no texto de ajuda uma faixa de altura antes. O limite sobe só para ela. */
+@media (max-height: 700px) {
+    .page-trocar-senha .login-ajuda {
+        display: none;
+    }
 }
 
 /* Alturas curtas (iPhone SE e semelhantes, 568px). Aqui o cartão pedia mais
@@ -2025,6 +2039,24 @@ td {
 
 .ser-falta.ok {
     color: #1c7a4a;
+}
+
+/* Caixa de marcar com o rótulo ao lado, e não empilhado: o .form-stack
+   trata todo label como campo de linha inteira. */
+.linha-escolha {
+    display: flex !important;
+    align-items: center;
+    gap: 10px;
+    font-size: var(--t-sm);
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.linha-escolha input {
+    width: 18px;
+    height: 18px;
+    flex: 0 0 auto;
+    margin: 0;
 }
 
 .ser-descricao {

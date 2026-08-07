@@ -313,10 +313,11 @@ function mysql_sync_admins(PDO $pdo, array $itens): void
 {
     $ids = [];
     $sql = $pdo->prepare(
-        'INSERT INTO admins (id, name, email, phone, password_hash, created_at)
-         VALUES (:id, :nome, :email, :fone, :senha, :criado)
+        'INSERT INTO admins (id, name, email, phone, password_hash, must_change_password, created_at)
+         VALUES (:id, :nome, :email, :fone, :senha, :trocar, :criado)
          ON DUPLICATE KEY UPDATE name = VALUES(name), email = VALUES(email),
-                                 phone = VALUES(phone), password_hash = VALUES(password_hash)'
+                                 phone = VALUES(phone), password_hash = VALUES(password_hash),
+                                 must_change_password = VALUES(must_change_password)'
     );
 
     foreach ($itens as $a) {
@@ -327,6 +328,10 @@ function mysql_sync_admins(PDO $pdo, array $itens): void
             ':email'  => (string) $a['email'],
             ':fone'   => (string) ($a['phone'] ?? ''),
             ':senha'  => (string) $a['password'],
+            /* A marca precisa ir junto no snapshot. Sem isto, qualquer
+               gravacao de cadastro apagaria a exigencia de troca e a senha
+               provisoria voltaria a valer para sempre. */
+            ':trocar' => !empty($a['must_change_password']) ? 1 : 0,
             ':criado' => mysql_data($a['created_at'] ?? null) ?? date('Y-m-d H:i:s'),
         ]);
     }
@@ -606,6 +611,7 @@ function mysql_ler_banco(): ?array
                 'email'      => (string) $r['email'],
                 'phone'      => (string) ($r['phone'] ?? ''),
                 'password'   => (string) $r['password_hash'],
+                'must_change_password' => !empty($r['must_change_password']),
                 'created_at' => mysql_iso($r['created_at']),
             ];
         }

@@ -614,6 +614,7 @@ hr {
 /* Sesc-inspired login and administrator screens */
 .page-admin-login,
 .page-judge-login,
+.page-trocar-senha,
 .page-dashboard,
 .page-judge-panel {
     --sesc-blue: #002f8f;
@@ -626,6 +627,7 @@ hr {
 
 .page-admin-login .topbar,
 .page-judge-login .topbar,
+.page-trocar-senha .topbar,
 .page-dashboard .topbar,
 .page-judge-panel .topbar {
     display: none;
@@ -633,6 +635,7 @@ hr {
 
 .page-admin-login main,
 .page-judge-login main,
+.page-trocar-senha main,
 .page-dashboard main,
 .page-judge-panel main {
     width: 100%;

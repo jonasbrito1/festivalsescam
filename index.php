@@ -1335,10 +1335,27 @@ function is_judge(): bool
     return isset($_SESSION['judge_id']);
 }
 
+/**
+ * [SEGURANCA] Conta com senha provisoria.
+ *
+ * Marcada assim, a conta entra mas nao chega a lugar nenhum ate trocar a
+ * senha. A trava fica no require_admin() de proposito: e por onde passam
+ * TODAS as telas e TODAS as acoes do administrador, entao nao ha rota
+ * esquecida por onde a senha provisoria continue servindo.
+ */
+function precisa_trocar_senha(): bool
+{
+    return !empty($_SESSION['admin_trocar_senha']);
+}
+
 function require_admin(): void
 {
     if (!is_admin()) {
         redirect_to('admin-login');
+    }
+
+    if (precisa_trocar_senha()) {
+        redirect_to('trocar-senha');
     }
 }
 
@@ -1864,6 +1881,12 @@ function handle_post(): void
                 $_SESSION['admin_id'] = $admin['id'];
                 $_SESSION['admin_name'] = $admin['name'];
                 $_SESSION['_ultimo_acesso'] = time();
+                $_SESSION['admin_trocar_senha'] = !empty($admin['must_change_password']);
+
+                if (precisa_trocar_senha()) {
+                    redirect_to('trocar-senha');
+                }
+
                 redirect_to('dashboard');
             }
         }
@@ -2329,11 +2352,90 @@ function handle_post(): void
             'email' => $emailNovo,
             'phone' => clean($_POST['phone'] ?? ''),
             'password' => password_hash($senhaNova, PASSWORD_DEFAULT),
+            /* Quem cria a conta conhece a senha. Marcada assim, ela serve uma
+               vez só: o dono troca no primeiro acesso e nem quem cadastrou
+               continua com o acesso. Os formulários antigos, sem o campo,
+               caem no padrão de exigir — o lado seguro. */
+            'must_change_password' => ($_POST['exigir_troca'] ?? '1') === '1',
             'created_at' => date('c'),
         ];
         db_write($db);
         flash('Administrador cadastrado.');
         redirect_to('dashboard', ['event_id' => active_event_id($db), 'section' => 'usuarios']);
+    }
+
+    /* Troca da senha provisória.
+     *
+     * NÃO usa require_admin(): aquele redireciona justamente para cá quando a
+     * marca está ativa, e a ação entraria em laço consigo mesma. A conferência
+     * é feita aqui, direto na sessão.
+     *
+     * Exige a senha atual mesmo estando a pessoa logada. Sem isso, um
+     * computador deixado aberto na tela de troca entrega a conta a quem
+     * passar — e é uma tela por onde se passa exatamente uma vez, no
+     * corre-corre do primeiro acesso. */
+    if ($action === 'trocar_senha') {
+        if (!is_admin()) {
+            redirect_to('admin-login');
+        }
+
+        $atual = (string)($_POST['senha_atual'] ?? '');
+        $nova = (string)($_POST['senha_nova'] ?? '');
+        $confirma = (string)($_POST['senha_confirma'] ?? '');
+        $euId = (int)($_SESSION['admin_id'] ?? 0);
+
+        $eu = null;
+        foreach (($db['admins'] ?? []) as $a) {
+            if ((int)$a['id'] === $euId) {
+                $eu = $a;
+                break;
+            }
+        }
+
+        if ($eu === null) {
+            session_destroy();
+            redirect_to('admin-login');
+        }
+
+        if (!password_verify($atual, (string)$eu['password'])) {
+            flash('A senha atual está incorreta.', 'error');
+            redirect_to('trocar-senha');
+        }
+
+        if (strlen($nova) < 8) {
+            flash('A nova senha deve ter ao menos 8 caracteres.', 'error');
+            redirect_to('trocar-senha');
+        }
+
+        if ($nova !== $confirma) {
+            flash('A confirmação não confere com a nova senha.', 'error');
+            redirect_to('trocar-senha');
+        }
+
+        /* Repetir a provisória não troca nada — seria cumprir a exigência sem
+           resolver o que ela existe para resolver. */
+        if (password_verify($nova, (string)$eu['password'])) {
+            flash('A nova senha precisa ser diferente da atual.', 'error');
+            redirect_to('trocar-senha');
+        }
+
+        foreach (($db['admins'] ?? []) as $i => $a) {
+            if ((int)$a['id'] === $euId) {
+                $db['admins'][$i]['password'] = password_hash($nova, PASSWORD_DEFAULT);
+                $db['admins'][$i]['must_change_password'] = false;
+                break;
+            }
+        }
+
+        db_write($db);
+
+        /* Sessão nova depois de trocar a senha: se alguém tinha capturado a
+           anterior, ela morre aqui junto com a senha antiga. */
+        session_regenerate_id(true);
+        $_SESSION['admin_trocar_senha'] = false;
+
+        flash('Senha alterada. Bem-vindo ao painel.');
+        redirect_to('dashboard');
     }
 
     /* Edição de administrador.
@@ -2377,9 +2479,18 @@ function handle_post(): void
             $db['admins'][$i]['name'] = $nome;
             $db['admins'][$i]['email'] = $email;
             $db['admins'][$i]['phone'] = $telefone;
+
             if ($senha !== '') {
                 $db['admins'][$i]['password'] = password_hash($senha, PASSWORD_DEFAULT);
+
+                /* Senha definida para OUTRA pessoa volta a ser provisória: quem
+                   digitou aqui a conhece. Trocando a própria, não faz sentido
+                   exigir troca de novo — acabou de ser trocada. */
+                $db['admins'][$i]['must_change_password'] =
+                    $adminId !== (int)($_SESSION['admin_id'] ?? 0)
+                    && ($_POST['exigir_troca'] ?? '') === '1';
             }
+
             $achou = true;
             break;
         }
@@ -3348,6 +3459,10 @@ function render_secao_usuarios(array $db, int $eventId): void
                                 <?php if ((int)$a['id'] === $eu): ?>
                                     <span class="status-pill ativo">você</span>
                                 <?php endif; ?>
+                                <?php /* Saber quem ainda não trocou é o que permite cobrar. */ ?>
+                                <?php if (!empty($a['must_change_password'])): ?>
+                                    <span class="status-pill pendente">senha provisória</span>
+                                <?php endif; ?>
                             </td>
                             <td data-label="E-mail"><?= h($a['email']) ?></td>
                             <td data-label="Telefone">
@@ -3399,6 +3514,14 @@ function render_secao_usuarios(array $db, int $eventId): void
                 <?php if ($emEdicao): ?>
                     <p class="dica">A senha atual não pode ser consultada. Preencha apenas se for trocá-la.</p>
                 <?php endif; ?>
+
+                <?php /* A senha que você define aqui é combinada por fora — dita, escrita
+                         num bilhete, mandada por mensagem. Enquanto ela valer, todo mundo
+                         que passou por aquele canal tem o acesso. */ ?>
+                <label class="linha-escolha">
+                    <input type="checkbox" name="exigir_troca" value="1" checked>
+                    <span>Exigir troca da senha no primeiro acesso</span>
+                </label>
 
                 <div class="form-actions">
                     <button class="button primary" type="submit">
@@ -4079,6 +4202,83 @@ function render_login(string $type): void
 function render_login_home(): void
 {
     render_login('home');
+}
+
+/**
+ * Troca da senha provisória.
+ *
+ * Reaproveita a moldura da tela de acesso de propósito: quem chega aqui
+ * acabou de entrar, e uma tela com a mesma cara não parece erro do sistema.
+ *
+ * Sem menu e sem link de volta — a única saída daqui é trocar a senha ou
+ * sair. Um atalho para o painel tornaria a exigência opcional.
+ */
+function render_trocar_senha(): void
+{
+    if (!is_admin()) {
+        redirect_to('admin-login');
+    }
+
+    /* Quem já trocou não tem o que fazer nesta tela. */
+    if (!precisa_trocar_senha()) {
+        redirect_to('dashboard');
+    }
+
+    render_header('Trocar senha');
+    ?>
+    <section class="sesc-login">
+        <div class="sesc-arc top"></div>
+        <div class="login-hero">
+            <div class="sesc-logo"><span>Sesc</span></div>
+            <span class="gold-line"></span>
+            <h1>Defina sua senha</h1>
+            <p>A senha atual é provisória e precisa ser trocada antes do primeiro acesso.</p>
+        </div>
+
+        <div class="login-options">
+            <form class="access-card form-stack" method="post" autocomplete="on">
+                <div class="access-icon"><?= menu_icone('cadeado') ?></div>
+                <h2><?= h((string)($_SESSION['admin_name'] ?? 'Administrador')) ?></h2>
+                <p>Escolha uma senha de ao menos 8 caracteres</p>
+
+                <input type="hidden" name="action" value="trocar_senha">
+
+                <label class="icon-field">
+                    <?= menu_icone('cadeado') ?>
+                    <input required name="senha_atual" type="password" autocomplete="current-password"
+                           placeholder="Senha atual" aria-label="Senha atual">
+                </label>
+                <label class="icon-field">
+                    <?= menu_icone('cadeado') ?>
+                    <input required name="senha_nova" type="password" minlength="8"
+                           autocomplete="new-password"
+                           placeholder="Nova senha" aria-label="Nova senha">
+                </label>
+                <label class="icon-field">
+                    <?= menu_icone('cadeado') ?>
+                    <input required name="senha_confirma" type="password" minlength="8"
+                           autocomplete="new-password"
+                           placeholder="Repita a nova senha" aria-label="Repita a nova senha">
+                </label>
+
+                <button class="button primary" type="submit">Salvar e entrar</button>
+            </form>
+        </div>
+
+        <p class="login-ajuda">
+            A senha não pode ser consultada depois — guarde-a com você.
+        </p>
+
+        <footer class="login-footer">
+            <span class="gold-line"></span>
+            <form method="post" class="ser-saidas">
+                <input type="hidden" name="action" value="logout">
+                <button class="button ghost small" type="submit">Sair sem trocar</button>
+            </form>
+        </footer>
+    </section>
+    <?php
+    render_footer();
 }
 
 function render_home(): void
@@ -5982,6 +6182,7 @@ match ($page) {
     'login' => render_login_home(),
     'admin-login' => render_login('admin'),
     'judge-login' => render_login('judge'),
+    'trocar-senha' => render_trocar_senha(),
     'dashboard' => render_dashboard(),
     'judge-panel' => render_judge_panel(),
     'ranking' => render_ranking_page(),
