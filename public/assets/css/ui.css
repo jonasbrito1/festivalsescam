@@ -1016,23 +1016,280 @@ td {
     color: rgba(255, 255, 255, .85);
 }
 
-/* Os dois cartões de acesso lado a lado, empilhando no celular. */
+/* ---------------------------------------------------------------------------
+   Tela de acesso em UMA tela, sem rolagem
+ *
+ * O layout original somava alturas fixas que sempre estouravam a janela:
+ * `min-height: 100vh` mais 78px de recuo no topo, logo de 112px, ícones de
+ * 118px, 82px de margem no rodapé e ainda o recuo do <main>. Só o cabeçalho
+ * já passava de 400px.
+ *
+ * Aqui a seção ocupa exatamente a altura da janela e é dividida em três
+ * faixas: cabeçalho, cartões (que absorvem a sobra) e rodapé. Os tamanhos
+ * acompanham a ALTURA disponível — por isso `vh` no clamp, e não só `vw`:
+ * numa janela baixa e larga é a altura que falta.
+ *
+ * `dvh` em vez de `vh` porque no celular a barra do navegador entra e sai;
+ * `vh` mede a tela toda e deixaria o botão embaixo da barra.
+   ------------------------------------------------------------------------- */
+.page-home main,
+.page-admin-login main,
+.page-judge-login main {
+    width: 100%;
+    max-width: none;
+    margin: 0;
+    padding: 0;
+}
+
+.sesc-login {
+    min-height: 100dvh;
+    height: 100dvh;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    align-content: stretch;
+    gap: clamp(8px, 1.6vh, 20px);
+    padding: clamp(12px, 2.5vh, 32px) clamp(12px, 3vw, 28px) 0;
+    overflow: hidden;
+}
+
+.login-hero {
+    align-content: center;
+    gap: clamp(2px, .6vh, 8px);
+}
+
+/* O logo é o maior consumidor de altura: escala com a janela. */
+.sesc-login .sesc-logo {
+    font-size: clamp(38px, 7.5vh, 92px);
+}
+
+.sesc-login .gold-line {
+    margin: clamp(6px, 1.2vh, 16px) auto;
+}
+
+.sesc-login .login-hero h1 {
+    margin: 0 0 clamp(2px, .5vh, 8px);
+    font-size: clamp(1.05rem, 2.6vh, 1.9rem);
+    line-height: 1.2;
+}
+
+.sesc-login .login-hero p {
+    margin: 0;
+    font-size: clamp(.8rem, 1.7vh, 1.05rem);
+}
+
+/* Os cartões ocupam a faixa central e se centralizam nela. */
 .login-options {
     display: grid;
-    gap: var(--esp-5);
-    grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+    gap: clamp(12px, 2vw, 28px);
+    grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
+    align-content: center;
     align-items: stretch;
+    width: min(880px, 100%);
+    margin-inline: auto;
+    min-height: 0;
 }
 
 .access-card {
     display: grid;
-    align-content: start;
-    gap: var(--esp-3);
-    padding: clamp(var(--esp-5), 4vw, 40px);
+    align-content: center;
+    gap: clamp(6px, 1.1vh, 14px);
+    padding: clamp(14px, 2.4vh, 32px) clamp(16px, 2.5vw, 34px);
+    border-radius: var(--ui-raio-g);
 }
 
 .access-card h2 {
     margin: 0;
+    font-size: clamp(1rem, 2.2vh, 1.5rem);
+}
+
+.access-card p {
+    margin: 0;
+    font-size: clamp(.75rem, 1.5vh, .95rem);
+}
+
+.sesc-login .access-icon {
+    width: clamp(42px, 8vh, 88px);
+    height: clamp(42px, 8vh, 88px);
+    margin: 0 auto clamp(2px, .8vh, 10px);
+}
+
+.sesc-login .access-icon svg {
+    width: 52%;
+    height: 52%;
+}
+
+.sesc-login .icon-field input,
+.sesc-login .access-card .button {
+    min-height: clamp(38px, 5.6vh, 52px);
+}
+
+.sesc-login .access-card .button.primary {
+    height: auto;
+    margin-top: clamp(2px, .8vh, 10px);
+    font-size: clamp(.85rem, 1.7vh, 1.05rem);
+}
+
+/* Rodapé enxuto: era 82px de margem mais uma linha dourada de 36px. */
+.sesc-login .login-ajuda {
+    margin: 0;
+    font-size: clamp(.7rem, 1.4vh, .9rem);
+}
+
+.sesc-login .login-footer {
+    margin-top: 0;
+    padding-bottom: clamp(8px, 1.6vh, 20px);
+}
+
+.sesc-login .login-footer .gold-line {
+    margin: clamp(6px, 1.2vh, 16px) auto;
+}
+
+.sesc-login .login-footer p {
+    font-size: clamp(.7rem, 1.4vh, .9rem);
+}
+
+/* ---------------------------------------------------------------------------
+   Alternador Administrador / Jurado
+ *
+ * Os radios ficam escondidos e servem só de estado. Em telas largas eles não
+ * têm efeito nenhum: os dois cartões aparecem lado a lado, como sempre.
+   ------------------------------------------------------------------------- */
+.aba-radio {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+    width: 0;
+    height: 0;
+}
+
+/* Os arcos decorativos do fundo são pseudo-elementos da própria seção. Sem
+   isto o arco amarelo passa por cima do alternador e corta o rótulo ativo. */
+.login-abas,
+.sesc-login .login-ajuda {
+    position: relative;
+    z-index: 1;
+}
+
+.login-abas {
+    display: none;
+}
+
+@media (max-width: 720px) {
+    .login-abas {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 6px;
+        width: min(420px, 100%);
+        margin: 0 auto;
+        padding: 5px;
+        border-radius: 999px;
+        background: #fff;
+        box-shadow: 0 6px 18px rgba(7, 20, 61, .12);
+    }
+
+    .login-abas label {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        min-height: 42px;
+        padding: 0 10px;
+        border-radius: 999px;
+        color: var(--sesc-blue, #002f8f);
+        font-size: var(--t-sm);
+        font-weight: 700;
+        cursor: pointer;
+        transition: background var(--ui-transicao), color var(--ui-transicao);
+    }
+
+    .login-abas .menu-icone svg {
+        width: 18px;
+        height: 18px;
+        stroke: currentColor;
+        fill: none;
+        stroke-width: 1.9;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+    }
+
+    /* Um cartão por vez: é o que permite caber sem cortar nada. */
+    #aba-admin:checked ~ .login-abas label[for="aba-admin"],
+    #aba-jurado:checked ~ .login-abas label[for="aba-jurado"] {
+        color: #fff;
+        background: var(--sesc-blue, #002f8f);
+    }
+
+    #aba-admin:checked ~ .login-options .access-card:nth-of-type(2),
+    #aba-jurado:checked ~ .login-options .access-card:nth-of-type(1) {
+        display: none;
+    }
+
+    .login-options {
+        grid-template-columns: 1fr;
+        width: min(460px, 100%);
+    }
+
+    /* Com um cartão só, dá para respirar. */
+    .access-card {
+        padding: clamp(18px, 3vh, 30px) clamp(18px, 5vw, 28px);
+    }
+
+    .sesc-login .access-icon {
+        width: clamp(48px, 9vh, 76px);
+        height: clamp(48px, 9vh, 76px);
+    }
+}
+
+/* Foco de teclado no alternador: sem isto, quem navega por Tab não enxerga
+   onde está, porque o radio real é invisível. */
+.aba-radio:focus-visible ~ .login-abas label[for="aba-admin"],
+.aba-radio:focus-visible ~ .login-abas label[for="aba-jurado"] {
+    outline: 3px solid var(--ui-foco);
+    outline-offset: 2px;
+}
+
+/* Alturas curtas (iPhone SE e semelhantes, 568px). Aqui o cartão pedia mais
+   altura do que a faixa central oferecia e acabava por cima do texto de
+   ajuda. Encolhe-se o logo e o cartão, e a dica de senha sai de cena: num
+   ecrã deste tamanho o formulário utilizável vale mais do que o lembrete. */
+@media (max-height: 620px) {
+    .sesc-login .sesc-logo {
+        font-size: 34px;
+    }
+
+    .sesc-login .gold-line {
+        margin: 4px auto;
+    }
+
+    .sesc-login .login-ajuda {
+        display: none;
+    }
+
+    .access-card {
+        padding: 14px 18px;
+        gap: 6px;
+    }
+
+    .sesc-login .access-icon {
+        width: 40px;
+        height: 40px;
+        margin-bottom: 0;
+    }
+
+    .login-abas label {
+        min-height: 38px;
+    }
+}
+
+/* Rede de segurança: abaixo de 460px de altura (celular deitado) encolher
+   mais tornaria os campos impraticáveis. Ali a página volta a rolar — melhor
+   rolar do que ter o botão inalcançável. */
+@media (max-height: 460px) {
+    .sesc-login {
+        height: auto;
+        min-height: 100dvh;
+        overflow: visible;
+    }
 }
 
 /* ---------------------------------------------------------------------------

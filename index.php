@@ -3453,6 +3453,21 @@ function render_login(string $type): void
                      O estado da infraestrutura se acompanha pelos logs. */ ?>
         </div>
 
+        <?php /* Alternador de acesso.
+                 Em telas estreitas os dois cartões empilhados não cabem na
+                 altura da janela — e cortá-los deixaria o botão do segundo
+                 inalcançável. Aqui só um aparece por vez.
+                 Feito com radio + CSS, sem JavaScript: se o script falhar,
+                 a escolha continua funcionando. Em telas largas os radios
+                 somem e os dois cartões voltam lado a lado. */ ?>
+        <input class="aba-radio" type="radio" name="tipo-acesso" id="aba-admin" checked>
+        <input class="aba-radio" type="radio" name="tipo-acesso" id="aba-jurado">
+
+        <div class="login-abas" role="tablist" aria-label="Tipo de acesso">
+            <label for="aba-admin"><?= menu_icone('escudo') ?><span>Administrador</span></label>
+            <label for="aba-jurado"><?= menu_icone('jurado') ?><span>Jurado</span></label>
+        </div>
+
         <div class="login-options">
             <?php /* Os ícones eram os caracteres ☆ ○ 👤 ▣ — desenhados de um jeito
                      em cada sistema, e sem relação com o que representam. Agora
