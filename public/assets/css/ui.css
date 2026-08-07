@@ -505,13 +505,12 @@ body {
         flex: 1 1 100%;
     }
 
-    /* Sinos e avatares decorativos consomem altura que, no celular, faz
-       falta para o conteudo. */
-    .admin-profile .bell,
+    /* Avatares decorativos consomem altura que, no celular, faz falta para o
+       conteudo. */
     .admin-profile .avatar {
         width: 38px;
         height: 38px;
-        font-size: 18px;
+        font-size: 14px;
     }
 }
 
@@ -519,6 +518,240 @@ body {
 .judge-person,
 .judge-timer {
     flex: 0 0 auto;
+}
+
+/* ---------------------------------------------------------------------------
+   6b. Menu da conta no cabecalho
+ *
+ * Antes havia ali dois circulos — um "sino" e um "avatar" — que nao clicavam
+ * em nada. Quem procura a propria conta procura naquele canto, e nao achava
+ * nem os proprios dados nem a saida: sair so era possivel pelo menu lateral.
+   ------------------------------------------------------------------------- */
+.admin-profile {
+    position: relative;
+}
+
+.perfil-gatilho {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    max-width: 100%;
+    padding: 6px 12px 6px 6px;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    color: inherit;
+    background: none;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background var(--ui-transicao), border-color var(--ui-transicao);
+}
+
+.perfil-gatilho:hover,
+.perfil-gatilho[aria-expanded="true"] {
+    border-color: #dbe2ef;
+    background: #f4f7fc;
+}
+
+.perfil-gatilho:focus-visible {
+    outline: 3px solid var(--ui-foco);
+    outline-offset: 2px;
+}
+
+.admin-profile .avatar {
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    width: 46px;
+    height: 46px;
+    border-radius: 999px;
+    color: #fff;
+    background: var(--sesc-blue, #002f8f);
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: .5px;
+}
+
+.perfil-quem {
+    display: grid;
+    min-width: 0;
+}
+
+.perfil-quem strong,
+.perfil-quem small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.perfil-quem small {
+    color: var(--sesc-muted);
+}
+
+.perfil-gatilho .menu-icone svg {
+    width: 18px;
+    height: 18px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    transition: transform var(--ui-transicao);
+}
+
+.perfil-gatilho[aria-expanded="true"] .menu-icone svg {
+    transform: rotate(180deg);
+}
+
+/* ---- A gaveta ---- */
+.perfil-menu {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    z-index: 40;
+    width: min(300px, calc(100vw - 32px));
+    padding: 8px;
+    border: 1px solid #e2e7f0;
+    border-radius: var(--ui-raio-g);
+    background: #fff;
+    box-shadow: 0 18px 40px rgba(7, 20, 61, .16);
+}
+
+.perfil-menu[hidden] {
+    display: none;
+}
+
+.perfil-cabeca {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 10px 14px;
+    border-bottom: 1px solid #eef1f7;
+}
+
+.perfil-cabeca > div {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+    justify-items: start;
+}
+
+.perfil-cabeca strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 100%;
+}
+
+.perfil-dados {
+    display: grid;
+    gap: 8px;
+    margin: 0;
+    padding: 12px 10px;
+    border-bottom: 1px solid #eef1f7;
+    list-style: none;
+}
+
+.perfil-dados li {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    color: var(--sesc-muted);
+    font-size: var(--t-sm);
+}
+
+.perfil-dados span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.perfil-dados .menu-icone svg,
+.perfil-acao .menu-icone svg {
+    width: 17px;
+    height: 17px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.perfil-dados .menu-icone {
+    flex: 0 0 auto;
+    color: var(--sesc-blue, #002f8f);
+}
+
+.perfil-acao-form {
+    margin: 0;
+}
+
+.perfil-acao {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    margin-top: 4px;
+    padding: 11px 10px;
+    border: 0;
+    border-radius: var(--ui-raio);
+    color: var(--sesc-blue, #002f8f);
+    background: none;
+    font: inherit;
+    font-weight: 600;
+    text-align: left;
+    text-decoration: none;
+    cursor: pointer;
+    transition: background var(--ui-transicao);
+}
+
+.perfil-acao:hover {
+    background: #f4f7fc;
+}
+
+.perfil-acao:focus-visible {
+    outline: 3px solid var(--ui-foco);
+    outline-offset: -3px;
+}
+
+/* Sair e destrutivo no sentido de encerrar a sessao: fica em vermelho para
+   nao ser clicado por engano junto com "Meus dados". */
+.perfil-acao.sair {
+    color: #b3261e;
+}
+
+.perfil-acao.sair:hover {
+    background: #fdeceb;
+}
+
+/* No celular o nome ao lado do avatar rouba a linha inteira do cabecalho.
+   Some o texto: o avatar com as iniciais ja identifica a conta, e o nome
+   completo reaparece dentro da gaveta. */
+@media (max-width: 620px) {
+    .perfil-quem {
+        display: none;
+    }
+
+    .perfil-gatilho {
+        padding: 4px;
+        gap: 4px;
+    }
+
+    /* Nesta largura o cabecalho quebra a linha e o perfil desce para a
+       esquerda. Ancorada pela direita, a gaveta de 300px saia inteira para
+       fora da tela (do -206 ao 94 numa janela de 390). Aqui ela abre para o
+       lado de dentro. */
+    .perfil-menu {
+        left: 0;
+        right: auto;
+    }
+}
+
+/* Ultimo freio, valha qual for o lado da ancora: a gaveta nunca passa da
+   largura da janela. */
+.perfil-menu {
+    max-width: calc(100vw - 24px);
 }
 
 /* O cabecalho do jurado era uma grade de 3 colunas fixas

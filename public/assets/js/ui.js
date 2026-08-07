@@ -11,6 +11,61 @@
 
    O botao e o mesmo nos dois casos.
    ========================================================================= */
+
+/* ============================================================================
+   Menu da conta no cabecalho.
+
+   Fecha por clique fora, Esc e ao perder o foco por Tab. Fica separado do
+   bloco do menu lateral de proposito: aquele desiste cedo quando nao acha a
+   barra, e o menu da conta nao pode depender disso.
+   ========================================================================= */
+(function () {
+    'use strict';
+
+    var caixa = document.querySelector('[data-perfil]');
+    if (!caixa) {
+        return;
+    }
+
+    var botao = caixa.querySelector('[data-perfil-botao]');
+    var gaveta = caixa.querySelector('.perfil-menu');
+
+    if (!botao || !gaveta) {
+        return;
+    }
+
+    function abrir(sim) {
+        gaveta.hidden = !sim;
+        botao.setAttribute('aria-expanded', sim ? 'true' : 'false');
+    }
+
+    botao.addEventListener('click', function (e) {
+        e.preventDefault();
+        abrir(gaveta.hidden);
+    });
+
+    document.addEventListener('click', function (e) {
+        if (!gaveta.hidden && !caixa.contains(e.target)) {
+            abrir(false);
+        }
+    });
+
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && !gaveta.hidden) {
+            abrir(false);
+            botao.focus();
+        }
+    });
+
+    // Sair da area por Tab tambem fecha: deixar a gaveta aberta atras do
+    // conteudo confunde quem navega pelo teclado.
+    caixa.addEventListener('focusout', function (e) {
+        if (!gaveta.hidden && !caixa.contains(e.relatedTarget)) {
+            abrir(false);
+        }
+    });
+})();
+
 (function () {
     'use strict';
 

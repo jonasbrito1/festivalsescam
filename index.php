@@ -2890,11 +2890,34 @@ function menu_icone(string $nome): string
         'cadeado'       => '<rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>',
         'whatsapp'      => '<path d="M21 11.5a8.4 8.4 0 0 1-12.4 7.4L3 21l2.2-5.5A8.4 8.4 0 1 1 21 11.5z"/><path d="M9 9.5c0 3 2.5 5.5 5.5 5.5l1-1.4-2-1-.9.8a5 5 0 0 1-2-2l.8-.9-1-2z"/>',
         'mensagem'      => '<path d="M21 15a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2z"/><path d="M8 9h8M8 13h5"/>',
+        'seta-baixo'    => '<path d="M6 9l6 6 6-6"/>',
+        'telefone'      => '<path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.4 2.1L8.1 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2z"/>',
     ];
 
     $forma = $formas[$nome] ?? $formas['painel'];
 
     return '<span class="menu-icone" aria-hidden="true"><svg viewBox="0 0 24 24">' . $forma . '</svg></span>';
+}
+
+/**
+ * Iniciais para o avatar do cabeçalho.
+ *
+ * Primeira e última palavra do nome — "Maria Helena Souza" vira "MS". Sem
+ * nome utilizável devolve "?", porque um avatar vazio parece defeito.
+ * mb_* porque nomes acentuados são a regra, não a exceção.
+ */
+function perfil_iniciais(string $nome): string
+{
+    $partes = preg_split('/\s+/u', trim($nome), -1, PREG_SPLIT_NO_EMPTY) ?: [];
+
+    if ($partes === []) {
+        return '?';
+    }
+
+    $primeira = mb_substr($partes[0], 0, 1, 'UTF-8');
+    $ultima = count($partes) > 1 ? mb_substr($partes[count($partes) - 1], 0, 1, 'UTF-8') : '';
+
+    return mb_strtoupper($primeira . $ultima, 'UTF-8');
 }
 
 /**
@@ -3632,10 +3655,58 @@ function render_dashboard(): void
                     <h1>Olá, Administrador</h1>
                     <p>Bem-vindo ao painel administrativo</p>
                 </div>
-                <div class="admin-profile">
-                    <span class="bell">◔</span>
-                    <span class="avatar">○</span>
-                    <div><strong>Administrador</strong><small>Nível: Administrador</small></div>
+                <?php
+                /* O sino e o avatar aqui eram dois círculos decorativos: não
+                   clicavam em nada e ocupavam a única área do cabeçalho onde
+                   se procura a conta. Viram um menu com os dados de quem está
+                   logado e a saída. */
+                $euId = (int)($_SESSION['admin_id'] ?? 0);
+                $euAdmin = null;
+                foreach ($db['admins'] ?? [] as $a) {
+                    if ((int)$a['id'] === $euId) {
+                        $euAdmin = $a;
+                        break;
+                    }
+                }
+                $euNome = (string)($_SESSION['admin_name'] ?? ($euAdmin['name'] ?? 'Administrador'));
+                $euEmail = (string)($euAdmin['email'] ?? '');
+                $euTel = wa_telefone((string)($euAdmin['phone'] ?? ''));
+                $urlPerfil = '?page=dashboard&section=usuarios' . $sufixo
+                    . ($euId > 0 ? '&admin_edit=' . $euId : '') . '#form-admin';
+                ?>
+                <div class="admin-profile" data-perfil>
+                    <button class="perfil-gatilho" type="button" data-perfil-botao
+                            aria-haspopup="true" aria-expanded="false" aria-controls="menu-perfil">
+                        <span class="avatar" aria-hidden="true"><?= h(perfil_iniciais($euNome)) ?></span>
+                        <span class="perfil-quem">
+                            <strong><?= h($euNome) ?></strong>
+                            <small>Administrador</small>
+                        </span>
+                        <?= menu_icone('seta-baixo') ?>
+                        <span class="sr-only">Abrir menu da conta</span>
+                    </button>
+
+                    <div class="perfil-menu" id="menu-perfil" hidden>
+                        <div class="perfil-cabeca">
+                            <span class="avatar" aria-hidden="true"><?= h(perfil_iniciais($euNome)) ?></span>
+                            <div>
+                                <strong><?= h($euNome) ?></strong>
+                                <span class="status-pill ativo">Administrador</span>
+                            </div>
+                        </div>
+
+                        <ul class="perfil-dados">
+                            <li><?= menu_icone('pessoa') ?><span><?= $euEmail !== '' ? h($euEmail) : 'E-mail não informado' ?></span></li>
+                            <li><?= menu_icone('telefone') ?><span><?= $euTel !== '' ? h(wa_telefone_exibicao($euTel)) : 'Telefone não informado' ?></span></li>
+                        </ul>
+
+                        <a class="perfil-acao" href="<?= h($urlPerfil) ?>"><?= menu_icone('configuracao') ?><span>Meus dados</span></a>
+
+                        <form method="post" class="perfil-acao-form">
+                            <input type="hidden" name="action" value="logout">
+                            <button class="perfil-acao sair" type="submit"><?= menu_icone('sair') ?><span>Sair da conta</span></button>
+                        </form>
+                    </div>
                 </div>
             </header>
 
