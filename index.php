@@ -4396,15 +4396,11 @@ function render_dashboard(): void
         <section class="admin-content">
             <header class="admin-top">
                 <?= menu_botao() ?>
-                <div>
-                    <h1>Olá, Administrador</h1>
-                    <p>Bem-vindo ao painel administrativo</p>
-                </div>
                 <?php
-                /* O sino e o avatar aqui eram dois círculos decorativos: não
-                   clicavam em nada e ocupavam a única área do cabeçalho onde
-                   se procura a conta. Viram um menu com os dados de quem está
-                   logado e a saída. */
+                /* Quem está logado. Levantado ANTES do cabeçalho porque a
+                   saudação também usa o nome — antes ela dizia "Olá,
+                   Administrador" para todo mundo, inclusive com o nome real
+                   ali do lado, no menu da conta. */
                 $euId = (int)($_SESSION['admin_id'] ?? 0);
                 $euAdmin = null;
                 foreach ($db['admins'] ?? [] as $a) {
@@ -4415,6 +4411,12 @@ function render_dashboard(): void
                 }
                 $euNome = (string)($_SESSION['admin_name'] ?? ($euAdmin['name'] ?? 'Administrador'));
                 $euEmail = (string)($euAdmin['email'] ?? '');
+                ?>
+                <div>
+                    <h1>Olá, <?= h($euNome) ?></h1>
+                    <p>Bem-vindo ao painel administrativo</p>
+                </div>
+                <?php
                 $euTel = wa_telefone((string)($euAdmin['phone'] ?? ''));
                 $urlPerfil = '?page=dashboard&section=usuarios' . $sufixo
                     . ($euId > 0 ? '&admin_edit=' . $euId : '') . '#form-admin';
