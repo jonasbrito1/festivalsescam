@@ -5069,14 +5069,12 @@ function render_dashboard(): void
                 </div>
             </section>
             <div class="info-note">O resultado será exibido aos participantes somente após a finalização da apuração.</div>
-            <form class="panel form-stack compact-form" method="post">
-                <h2>Novo administrador</h2>
-                <input type="hidden" name="action" value="create_admin">
-                <label>Nome <input required name="name"></label>
-                <label>E-mail <input required name="email" type="email"></label>
-                <label>Senha <input required name="password" type="password"></label>
-                <button class="button primary" type="submit">Cadastrar administrador</button>
-            </form>
+            <?php /* Havia aqui um formulário "Novo administrador", sobra do
+                     esqueleto inicial. Criar conta de administrador no meio da
+                     tela de Apuração é convite a cadastro acidental, e aquele
+                     formulário nem pedia telefone nem oferecia a troca de senha
+                     obrigatória — coisas que o formulário certo, em Usuários e
+                     senhas, já faz. */ ?>
         </section>
     <?php endif; ?>
 
@@ -5206,12 +5204,18 @@ function render_dashboard(): void
                 <a class="button ghost" href="?page=dashboard&section=placar&event_id=<?= $eventId ?>">Atualizar</a>
             </div>
             <div class="scoreboard-list">
+                <?php /* As duas colunas de número estão em escalas diferentes, e
+                         sem dizer qual é qual alguém acaba anotando a errada:
+                         a Média é por critério (0 a 10) e é o que ordena a
+                         lista; o Total soma tudo o que foi lançado, então passa
+                         do máximo de um participante quando há mais de um
+                         jurado. Os rótulos abaixo dizem isso. */ ?>
                 <div class="scoreboard-row cabecalho">
                     <strong>#</strong>
                     <span>Participante</span>
                     <i>Jurados</i>
-                    <b>Média</b>
-                    <em>Total</em>
+                    <b>Média <small>por critério, 0 a 10</small></b>
+                    <em>Total <small>somando os jurados</small></em>
                 </div>
                 <?php foreach ($ranking as $index => $row): ?>
                     <div class="scoreboard-row<?= $index === 0 ? ' lider' : '' ?>">

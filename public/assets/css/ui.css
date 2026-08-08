@@ -1981,6 +1981,17 @@ td {
     }
 }
 
+/* Escala de cada coluna do placar, em letra miúda sob o rótulo. */
+.scoreboard-row.cabecalho small {
+    display: block;
+    font-size: var(--t-xs);
+    font-weight: 500;
+    line-height: 1.2;
+    opacity: .75;
+    text-transform: none;
+    letter-spacing: 0;
+}
+
 /* ---------------------------------------------------------------------------
    8e2. Toque — tablets e celulares
  *
