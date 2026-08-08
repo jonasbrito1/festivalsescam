@@ -3216,13 +3216,24 @@ function ser_responder_estado(): void
     $planilha = ser_ler();
     $celulas = [];
 
+    /* Cada célula vai como {v: nota, j: jurados}. O `j` é o que permite ao
+       navegador reescrever o rodapé "3 jurados" sem recarregar a página. */
+    $montar = static fn($valor, string $origem, int $jurados): array => [
+        'v' => ser_numero_ou_vazio($valor),
+        'j' => $origem === 'jurados' ? $jurados : -1,
+    ];
+
     foreach ($planilha['blocos'] as $b) {
-        $celulas['b' . $b['id'] . '-danca'] = ser_numero_ou_vazio($b['danca']);
-        $celulas['b' . $b['id'] . '-mosaico'] = ser_numero_ou_vazio($b['mosaico']);
+        $celulas['b' . $b['id'] . '-danca'] = $montar($b['danca'], $b['origem_danca'] ?? 'manual', (int)($b['jurados_danca'] ?? 0));
+        $celulas['b' . $b['id'] . '-mosaico'] = $montar($b['mosaico'], $b['origem_mosaico'] ?? 'manual', (int)($b['jurados_mosaico'] ?? 0));
 
         foreach ($b['turmas'] as $t) {
             foreach (array_keys(SER_CRITERIOS) as $coluna) {
-                $celulas['t' . $t['id'] . '-' . $coluna] = ser_numero_ou_vazio($t[$coluna]);
+                $celulas['t' . $t['id'] . '-' . $coluna] = $montar(
+                    $t[$coluna],
+                    $t['origem_' . $coluna] ?? 'manual',
+                    (int)($t['jurados_' . $coluna] ?? 0)
+                );
             }
         }
     }
@@ -3271,6 +3282,26 @@ function ser_responder_download(): void
     header('Cache-Control: no-store');
     echo $conteudo;
     exit;
+}
+
+/**
+ * Célula cuja nota vem dos jurados.
+ *
+ * Não é campo: é resultado. Mostra a nota, quantos jurados já lançaram e,
+ * enquanto ninguém lançou, diz que está aguardando — em vez de exibir um
+ * campo vazio que dá a impressão de faltar alguém digitar.
+ */
+function ser_celula_dos_jurados($valor, int $jurados, string $chave): string
+{
+    $classe = $jurados === 0 ? 'ser-dos-jurados aguardando' : 'ser-dos-jurados';
+    $titulo = $jurados === 0 ? 'Nenhum jurado lançou nota ainda' : 'Média de ' . $jurados . ' jurado(s)';
+    $nota = $jurados === 0 ? '—' : h(ser_numero_ou_vazio($valor));
+    $rodape = $jurados === 0 ? 'aguardando' : $jurados . ' jurado' . ($jurados > 1 ? 's' : '');
+
+    /* O data-ser-celula é o mesmo dos campos digitáveis: é por ele que a
+       atualização automática encontra a célula para reescrever. */
+    return '<span class="' . $classe . '" data-ser-celula="' . h($chave) . '" title="' . h($titulo) . '">'
+         . '<b>' . $nota . '</b><small>' . h($rodape) . '</small></span>';
 }
 
 /** Nota para a tela: '' quando não lançada, sem zeros decorativos. */
@@ -3999,12 +4030,41 @@ function render_secao_planilha(): void
     <?php
 }
 
+/**
+ * De onde vêm as notas desta tela.
+ *
+ * Sem este aviso, o administrador abre a planilha, vê campos que não aceitam
+ * digitação e conclui que quebrou alguma coisa.
+ */
+function render_ser_aviso_origem(): void
+{
+    $vinculadas = count(ser_celulas_vinculadas());
+
+    if ($vinculadas === 0) {
+        return;
+    }
+    ?>
+    <div class="panel">
+        <div class="info-note">
+            <strong>As notas vêm dos jurados.</strong>
+            <?= (int)$vinculadas ?> células desta planilha são preenchidas automaticamente
+            pelo que os jurados lançam nos eventos SER SESC — cada uma mostra a
+            <strong>média dos jurados</strong> que já avaliaram, e o número deles logo abaixo.
+            Elas não aceitam digitação: a nota se altera no evento, não aqui.
+            A tela se atualiza sozinha a cada 5 segundos, conforme as notas entram.
+        </div>
+    </div>
+    <?php
+}
+
 /** Etapa 1: três notas por turma, agrupadas por grupo. */
 function render_ser_individual(array $planilha, int $edicaoId): void
 {
     ?>
     <p class="ser-descricao"><?= h(SER_ETAPAS['individual']['descricao']) ?>
         A soma das turmas é a pontuação do grupo nesta etapa; as turmas não disputam entre si.</p>
+
+    <?php render_ser_aviso_origem(); ?>
 
     <?php foreach ($planilha['blocos'] as $bloco): ?>
         <div class="panel data-panel planilha-bloco" data-bloco="<?= (int)$bloco['id'] ?>">
@@ -4037,14 +4097,22 @@ function render_ser_individual(array $planilha, int $edicaoId): void
                             <td data-label="País"><?= h($turma['pais']) ?></td>
                             <?php foreach (array_keys(SER_CRITERIOS) as $coluna): ?>
                                 <td data-label="<?= h(SER_CRITERIOS[$coluna]) ?>">
-                                    <input class="ser-nota" type="text" inputmode="decimal"
-                                           value="<?= h(ser_numero_ou_vazio($turma[$coluna])) ?>"
-                                           data-ser-celula="t<?= (int)$turma['id'] ?>-<?= h($coluna) ?>"
-                                           data-alvo="turma"
-                                           data-id="<?= (int)$turma['id'] ?>"
-                                           data-campo="<?= h($coluna) ?>"
-                                           aria-label="<?= h(SER_CRITERIOS[$coluna] . ' — ' . $turma['turma']) ?>"
-                                           placeholder="0 a 10">
+                                    <?php if (($turma['origem_' . $coluna] ?? 'manual') === 'jurados'): ?>
+                                        <?= ser_celula_dos_jurados(
+                                            $turma[$coluna],
+                                            (int)($turma['jurados_' . $coluna] ?? 0),
+                                            't' . (int)$turma['id'] . '-' . $coluna
+                                        ) ?>
+                                    <?php else: ?>
+                                        <input class="ser-nota" type="text" inputmode="decimal"
+                                               value="<?= h(ser_numero_ou_vazio($turma[$coluna])) ?>"
+                                               data-ser-celula="t<?= (int)$turma['id'] ?>-<?= h($coluna) ?>"
+                                               data-alvo="turma"
+                                               data-id="<?= (int)$turma['id'] ?>"
+                                               data-campo="<?= h($coluna) ?>"
+                                               aria-label="<?= h(SER_CRITERIOS[$coluna] . ' — ' . $turma['turma']) ?>"
+                                               placeholder="0 a 10">
+                                    <?php endif; ?>
                                 </td>
                             <?php endforeach; ?>
                             <td data-label="Total" class="ser-total"
@@ -4125,6 +4193,8 @@ function render_ser_coletiva(array $planilha, string $etapa): void
     ?>
     <p class="ser-descricao"><?= h(SER_ETAPAS[$etapa]['descricao']) ?></p>
 
+    <?php render_ser_aviso_origem(); ?>
+
     <div class="panel data-panel">
         <div class="table-wrap">
             <table class="admin-table responsive-cards planilha-grade">
@@ -4139,14 +4209,22 @@ function render_ser_coletiva(array $planilha, string $etapa): void
                         </td>
                         <td data-label="Turno"><?= h($bloco['turno']) ?></td>
                         <td data-label="<?= h(SER_ETAPAS[$etapa]['titulo']) ?>">
-                            <input class="ser-nota" type="text" inputmode="decimal"
-                                   value="<?= h(ser_numero_ou_vazio($bloco[$campo])) ?>"
-                                   data-ser-celula="b<?= (int)$bloco['id'] ?>-<?= h($campo) ?>"
-                                   data-alvo="bloco"
-                                   data-id="<?= (int)$bloco['id'] ?>"
-                                   data-campo="<?= h($campo) ?>"
-                                   aria-label="<?= h(SER_ETAPAS[$etapa]['titulo'] . ' — ' . $bloco['nome']) ?>"
-                                   placeholder="0 a 10">
+                            <?php if (($bloco['origem_' . $campo] ?? 'manual') === 'jurados'): ?>
+                                <?= ser_celula_dos_jurados(
+                                    $bloco[$campo],
+                                    (int)($bloco['jurados_' . $campo] ?? 0),
+                                    'b' . (int)$bloco['id'] . '-' . $campo
+                                ) ?>
+                            <?php else: ?>
+                                <input class="ser-nota" type="text" inputmode="decimal"
+                                       value="<?= h(ser_numero_ou_vazio($bloco[$campo])) ?>"
+                                       data-ser-celula="b<?= (int)$bloco['id'] ?>-<?= h($campo) ?>"
+                                       data-alvo="bloco"
+                                       data-id="<?= (int)$bloco['id'] ?>"
+                                       data-campo="<?= h($campo) ?>"
+                                       aria-label="<?= h(SER_ETAPAS[$etapa]['titulo'] . ' — ' . $bloco['nome']) ?>"
+                                       placeholder="0 a 10">
+                            <?php endif; ?>
                         </td>
                     </tr>
                 <?php endforeach; ?>

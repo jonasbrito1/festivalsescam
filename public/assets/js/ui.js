@@ -411,20 +411,44 @@
                 revisao = dados.revisao || revisao;
 
                 Object.keys(dados.celulas || {}).forEach(function (chave) {
-                    var campo = document.querySelector('[data-ser-celula="' + chave + '"]');
+                    var alvo = document.querySelector('[data-ser-celula="' + chave + '"]');
 
                     /* Nunca escreve por cima do campo em foco: seria arrancar
                        o numero da mao de quem esta digitando. */
-                    if (!campo || campo === document.activeElement) {
+                    if (!alvo || alvo === document.activeElement) {
                         return;
                     }
 
-                    var novo = dados.celulas[chave];
-                    if (limpar(campo.value) !== limpar(novo)) {
-                        campo.value = novo;
-                        campo.dataset.ultimo = limpar(novo);
-                        campo.classList.add('alheio');
-                        window.setTimeout(function () { campo.classList.remove('alheio'); }, 2000);
+                    var info = dados.celulas[chave];
+                    /* Compatibilidade: antes cada celula vinha como texto. */
+                    var novo = (info && typeof info === 'object') ? info.v : info;
+                    var jurados = (info && typeof info === 'object') ? info.j : -1;
+
+                    /* Celula alimentada pelos jurados: e resultado, nao campo.
+                       Reescreve a nota e o rodape com a contagem. */
+                    if (alvo.classList.contains('ser-dos-jurados')) {
+                        var nota = alvo.querySelector('b');
+                        var rodape = alvo.querySelector('small');
+                        var texto = jurados > 0 ? novo : '—';
+                        var etiqueta = jurados > 0
+                            ? jurados + ' jurado' + (jurados > 1 ? 's' : '')
+                            : 'aguardando';
+
+                        if (nota && nota.textContent !== texto) {
+                            nota.textContent = texto;
+                            if (rodape) { rodape.textContent = etiqueta; }
+                            alvo.classList.toggle('aguardando', jurados <= 0);
+                            alvo.classList.add('alheio');
+                            window.setTimeout(function () { alvo.classList.remove('alheio'); }, 2000);
+                        }
+                        return;
+                    }
+
+                    if (limpar(alvo.value) !== limpar(novo)) {
+                        alvo.value = novo;
+                        alvo.dataset.ultimo = limpar(novo);
+                        alvo.classList.add('alheio');
+                        window.setTimeout(function () { alvo.classList.remove('alheio'); }, 2000);
                     }
                 });
 

@@ -75,6 +75,97 @@ function ser_disponivel(): bool
 }
 
 /* ===========================================================================
+ * VÍNCULO COM AS NOTAS DOS JURADOS
+ *
+ * Cada célula da planilha pode estar ligada a um (participante, critério) de
+ * um evento. Quando está, a nota exibida é a MÉDIA dos jurados que lançaram
+ * nota ali — não um número digitado à mão.
+ *
+ * Média, e não soma: com três jurados dando 6, 8 e 10, a nota da turma é 8.
+ * Somar daria 24 num campo cujo máximo é 10, e a planilha inteira perderia
+ * a escala. É o mesmo critério que a classificação do evento já usa.
+ *
+ * A célula ligada deixa de ser digitável. Ter duas origens para o mesmo
+ * número é o caminho mais curto para as duas divergirem, e aí ninguém sabe
+ * qual é a nota real.
+ * ======================================================================== */
+
+/**
+ * Notas vindas dos jurados, por célula.
+ *
+ * @return array<string,array{nota:float, jurados:int, atualizado:string}>
+ *         chave: "turma:12:bandeira"
+ */
+function ser_notas_dos_jurados(): array
+{
+    $pdo = mysql_conexao();
+
+    if (!$pdo) {
+        return [];
+    }
+
+    try {
+        /* Uma consulta só para as 90 células. Percorrer célula a célula
+           faria 90 idas ao banco a cada carregamento da tela, que recarrega
+           de 5 em 5 segundos. */
+        $linhas = $pdo->query(
+            "SELECT v.alvo, v.alvo_id, v.campo,
+                    AVG(n.score)        AS media,
+                    COUNT(DISTINCT n.judge_id) AS jurados,
+                    MAX(n.updated_at)   AS atualizado
+               FROM ser_vinculo v
+               JOIN votes n
+                 ON n.event_id       = v.event_id
+                AND n.participant_id = v.participant_id
+                AND n.criterion_id   = v.criterion_id
+              GROUP BY v.alvo, v.alvo_id, v.campo"
+        )->fetchAll();
+    } catch (Throwable $e) {
+        error_log('SER SESC notas_dos_jurados: ' . $e->getMessage());
+
+        return [];
+    }
+
+    $saida = [];
+
+    foreach ($linhas as $l) {
+        $saida[$l['alvo'] . ':' . (int)$l['alvo_id'] . ':' . $l['campo']] = [
+            'nota'       => round((float)$l['media'], 2),
+            'jurados'    => (int)$l['jurados'],
+            'atualizado' => (string)($l['atualizado'] ?? ''),
+        ];
+    }
+
+    return $saida;
+}
+
+/** As células que têm origem nos jurados, mesmo que ainda sem nota lançada. */
+function ser_celulas_vinculadas(): array
+{
+    $pdo = mysql_conexao();
+
+    if (!$pdo) {
+        return [];
+    }
+
+    try {
+        $linhas = $pdo->query('SELECT alvo, alvo_id, campo, event_id FROM ser_vinculo')->fetchAll();
+    } catch (Throwable $e) {
+        error_log('SER SESC celulas_vinculadas: ' . $e->getMessage());
+
+        return [];
+    }
+
+    $saida = [];
+
+    foreach ($linhas as $l) {
+        $saida[$l['alvo'] . ':' . (int)$l['alvo_id'] . ':' . $l['campo']] = (int)$l['event_id'];
+    }
+
+    return $saida;
+}
+
+/* ===========================================================================
  * LEITURA
  * ======================================================================== */
 
@@ -116,6 +207,27 @@ function ser_ler(): array
         return ['blocos' => [], 'revisao' => '', 'atualizado' => ''];
     }
 
+    /* A nota dos jurados manda: onde há vínculo, o valor digitado à mão é
+       ignorado. Ver o comentário em ser_notas_dos_jurados(). */
+    $dosJurados = ser_notas_dos_jurados();
+    $vinculadas = ser_celulas_vinculadas();
+
+    $aplicar = static function (string $alvo, int $alvoId, string $campo, $manual) use ($dosJurados, $vinculadas): array {
+        $chave = $alvo . ':' . $alvoId . ':' . $campo;
+
+        if (!isset($vinculadas[$chave])) {
+            return ['valor' => $manual, 'origem' => 'manual', 'jurados' => 0];
+        }
+
+        $vindo = $dosJurados[$chave] ?? null;
+
+        return [
+            'valor'   => $vindo === null ? null : $vindo['nota'],
+            'origem'  => 'jurados',
+            'jurados' => $vindo === null ? 0 : $vindo['jurados'],
+        ];
+    };
+
     $porBloco = [];
     foreach ($turmas as $t) {
         $porBloco[(int)$t['bloco_id']][] = $t;
@@ -124,6 +236,12 @@ function ser_ler(): array
     $saida = [];
     $ultima = '';
 
+    foreach ($dosJurados as $info) {
+        if ($info['atualizado'] > $ultima) {
+            $ultima = $info['atualizado'];
+        }
+    }
+
     foreach ($blocos as $b) {
         $id = (int)$b['id'];
         $lista = $porBloco[$id] ?? [];
@@ -131,12 +249,17 @@ function ser_ler(): array
 
         foreach ($lista as $i => $t) {
             $total = 0.0;
+
             foreach (array_keys(SER_CRITERIOS) as $coluna) {
-                $total += (float)($t[$coluna] ?? 0);
+                $celula = $aplicar('turma', (int)$t['id'], $coluna, $t[$coluna]);
+                $lista[$i][$coluna] = $celula['valor'];
+                $lista[$i]['origem_' . $coluna] = $celula['origem'];
+                $lista[$i]['jurados_' . $coluna] = $celula['jurados'];
+                $total += (float)$celula['valor'];
             }
 
             $lista[$i]['total'] = $total;
-            $lista[$i]['completa'] = ser_turma_completa($t);
+            $lista[$i]['completa'] = ser_turma_completa($lista[$i]);
             $somaIndividual += $total;
 
             if ($t['atualizado'] > $ultima) {
@@ -148,8 +271,10 @@ function ser_ler(): array
             $ultima = (string)$b['atualizado'];
         }
 
-        $danca = $b['danca'] === null ? null : (float)$b['danca'];
-        $mosaico = $b['mosaico'] === null ? null : (float)$b['mosaico'];
+        $celulaDanca = $aplicar('bloco', $id, 'danca', $b['danca']);
+        $celulaMosaico = $aplicar('bloco', $id, 'mosaico', $b['mosaico']);
+        $danca = $celulaDanca['valor'] === null ? null : (float)$celulaDanca['valor'];
+        $mosaico = $celulaMosaico['valor'] === null ? null : (float)$celulaMosaico['valor'];
 
         $maximoIndividual = count($lista) * SER_NOTA_MAXIMA * count(SER_CRITERIOS);
 
@@ -168,6 +293,10 @@ function ser_ler(): array
             'maximo_geral'      => $maximoIndividual + 2 * SER_NOTA_MAXIMA,
             'atualizado_por'    => (string)($b['atualizado_por'] ?? ''),
             'faltando'          => ser_faltando_no_bloco($lista, $danca, $mosaico),
+            'origem_danca'      => $celulaDanca['origem'],
+            'jurados_danca'     => $celulaDanca['jurados'],
+            'origem_mosaico'    => $celulaMosaico['origem'],
+            'jurados_mosaico'   => $celulaMosaico['jurados'],
         ];
     }
 
@@ -324,7 +453,23 @@ function ser_revisao(): string
              FROM ser_blocos"
         )->fetch();
 
-        return substr(md5(($linha['marca'] ?? '') . ($blocos['marca'] ?? '')), 0, 12);
+        /* As notas dos jurados também entram na marca. Sem isto a tela só
+           perceberia edição manual, e a planilha ficaria parada enquanto os
+           jurados lançam — que é justamente o momento em que ela precisa se
+           mexer sozinha. */
+        $jurados = $pdo->query(
+            "SELECT CONCAT(IFNULL(MAX(n.updated_at), ''), '|', COUNT(*), '|',
+                           IFNULL(SUM(n.score), 0)) AS marca
+               FROM ser_vinculo v
+               JOIN votes n
+                 ON n.event_id       = v.event_id
+                AND n.participant_id = v.participant_id
+                AND n.criterion_id   = v.criterion_id"
+        )->fetch();
+
+        return substr(md5(
+            ($linha['marca'] ?? '') . ($blocos['marca'] ?? '') . ($jurados['marca'] ?? '')
+        ), 0, 12);
     } catch (Throwable $e) {
         error_log('SER SESC revisao: ' . $e->getMessage());
 
@@ -364,6 +509,21 @@ function ser_gravar_nota(string $alvo, int $id, string $campo, ?float $nota, str
 
     if ($nota !== null && ($nota < 0 || $nota > SER_NOTA_MAXIMA)) {
         return ['ok' => false, 'mensagem' => 'A nota precisa estar entre 0 e ' . (int)SER_NOTA_MAXIMA . '.'];
+    }
+
+    /* Célula alimentada pelos jurados não aceita digitação.
+     *
+     * A tela já mostra esses campos travados; esta conferência existe para o
+     * caso de a requisição chegar por fora dela. Deixar passar criaria um
+     * valor manual que a leitura ignora — o administrador veria a nota mudar
+     * na tela e voltar ao valor dos jurados no segundo seguinte, sem
+     * entender por quê. */
+    if (isset(ser_celulas_vinculadas()[$alvo . ':' . $id . ':' . $campo])) {
+        return [
+            'ok' => false,
+            'mensagem' => 'Esta nota vem dos jurados e não pode ser digitada aqui. '
+                . 'Para alterá-la, ajuste a nota no evento correspondente.',
+        ];
     }
 
     $tabela = $alvo === 'turma' ? 'ser_turmas' : 'ser_blocos';

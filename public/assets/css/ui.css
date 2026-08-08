@@ -2490,6 +2490,45 @@ td {
     color: var(--sesc-blue, #002f8f);
 }
 
+/* Célula preenchida pelos jurados. Tem cara de resultado, não de campo:
+   sem borda de caixa de texto, para ninguém tentar digitar nela. */
+.ser-dos-jurados {
+    display: grid;
+    gap: 1px;
+    justify-items: center;
+    min-height: 44px;
+    align-content: center;
+    padding: 4px 8px;
+    border-radius: var(--ui-raio);
+    background: #f2f7f4;
+}
+
+.ser-dos-jurados b {
+    color: #1c7a4a;
+    font-size: var(--t-md);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+}
+
+.ser-dos-jurados small {
+    color: var(--sesc-muted);
+    font-size: var(--t-xs);
+    line-height: 1.1;
+}
+
+.ser-dos-jurados.aguardando {
+    background: #f7f8fa;
+}
+
+.ser-dos-jurados.aguardando b {
+    color: var(--sesc-muted);
+}
+
+/* Mesma piscada azul dos campos: marca a nota que acabou de chegar. */
+.ser-dos-jurados.alheio {
+    box-shadow: 0 0 0 3px rgba(0, 47, 143, .18);
+}
+
 .planilha-grade th,
 .planilha-grade td {
     vertical-align: middle;
