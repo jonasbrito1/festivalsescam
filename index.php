@@ -1492,6 +1492,19 @@ function active_event_id(array $db): ?int
         $events = event_options($db, true);
     }
 
+    /* Prefere um evento que já saiu do rascunho.
+     *
+     * Ao arquivar os três eventos de um festival, o painel caía num rascunho
+     * antigo — e todas as telas de evento (Jurados, Participantes, Critérios)
+     * passavam a mostrar os dados dele, dando a impressão de que o cadastro do
+     * festival tinha sumido. Um rascunho só é escolhido sozinho quando não há
+     * mais nada. */
+    foreach ($events as $evento) {
+        if (($evento['status'] ?? '') !== 'rascunho') {
+            return (int)$evento['id'];
+        }
+    }
+
     return $events ? (int)$events[0]['id'] : null;
 }
 
@@ -3641,6 +3654,103 @@ function render_footer(): void
  * Telas de gestão de usuários e integração
  * ======================================================================== */
 
+/**
+ * Todos os jurados do sistema, agrupados por evento.
+ *
+ * Existe por causa de um susto real: ao arquivar os eventos SER SESC, a tela
+ * de Jurados passou a mostrar os jurados de outro evento — o painel havia
+ * selecionado sozinho o evento não arquivado mais recente — e pareceu que os
+ * jurados do festival tinham sido apagados. Não tinham; simplesmente não eram
+ * os do evento em foco.
+ *
+ * Este quadro fecha essa lacuna: nenhum jurado fica invisível, nem os de
+ * eventos arquivados. E como o mesmo nome de usuário aparece em vários
+ * eventos, ele também mostra quem julga em quantos.
+ */
+function render_todos_os_jurados(array $db, ?int $eventIdAtual): void
+{
+    $eventos = [];
+    foreach ($db['events'] ?? [] as $e) {
+        $eventos[(int)$e['id']] = $e;
+    }
+
+    $porEvento = [];
+    $porUsuario = [];
+
+    foreach ($db['judges'] ?? [] as $j) {
+        $porEvento[(int)$j['event_id']][] = $j;
+        $porUsuario[mb_strtolower((string)$j['username'])][] = (int)$j['event_id'];
+    }
+
+    if ($porEvento === []) {
+        return;
+    }
+
+    /* Evento aberto primeiro; depois os ativos por data; arquivados no fim. */
+    uksort($porEvento, static function (int $a, int $b) use ($eventos, $eventIdAtual): int {
+        if ($a === $eventIdAtual) { return -1; }
+        if ($b === $eventIdAtual) { return 1; }
+
+        $arqA = !empty($eventos[$a]['arquivado']);
+        $arqB = !empty($eventos[$b]['arquivado']);
+
+        if ($arqA !== $arqB) { return $arqA ? 1 : -1; }
+
+        return strcmp((string)($eventos[$b]['date'] ?? ''), (string)($eventos[$a]['date'] ?? ''));
+    });
+
+    $total = count($db['judges'] ?? []);
+    $pessoas = count($porUsuario);
+    ?>
+    <div class="panel data-panel">
+        <div class="management-head compact">
+            <h2>Todos os jurados do sistema</h2>
+            <span class="status-pill"><?= $total ?> cadastro(s) · <?= $pessoas ?> pessoa(s)</span>
+        </div>
+        <p class="dica">
+            O cadastro de jurado pertence a um evento. Quem julga mais de uma modalidade
+            aparece uma vez em cada — com o mesmo usuário e a mesma senha, entrando uma vez só.
+            Eventos arquivados continuam aqui: nada é perdido ao arquivar.
+        </p>
+
+        <div class="table-wrap">
+            <table class="admin-table responsive-cards">
+                <thead>
+                    <tr><th>Evento</th><th>Jurado</th><th>Usuário</th><th>Também julga em</th><th>Ações</th></tr>
+                </thead>
+                <tbody>
+                <?php foreach ($porEvento as $evId => $lista): ?>
+                    <?php $ev = $eventos[$evId] ?? null; ?>
+                    <?php foreach ($lista as $j): ?>
+                        <?php
+                        $outros = array_values(array_diff($porUsuario[mb_strtolower((string)$j['username'])] ?? [], [$evId]));
+                        ?>
+                        <tr class="<?= $evId === $eventIdAtual ? 'ser-campeao' : '' ?>">
+                            <td data-label="Evento">
+                                <?= h($ev['name'] ?? ('Evento ' . $evId)) ?>
+                                <?php if ($ev && evento_arquivado($ev)): ?>
+                                    <span class="status-pill">arquivado</span>
+                                <?php endif; ?>
+                            </td>
+                            <td data-label="Jurado"><strong><?= h($j['name']) ?></strong></td>
+                            <td data-label="Usuário"><?= h($j['username']) ?></td>
+                            <td data-label="Também julga em">
+                                <?= $outros ? count($outros) . ' outro(s) evento(s)' : '—' ?>
+                            </td>
+                            <td data-label="Ações" class="table-actions">
+                                <a class="button small"
+                                   href="?page=dashboard&section=jurados&event_id=<?= (int)$evId ?>&judge_edit=<?= (int)$j['id'] ?>#novo-jurado">Editar</a>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <?php
+}
+
 /** Painel único de administradores e jurados, com telefone e senha. */
 function render_secao_usuarios(array $db, int $eventId): void
 {
@@ -4814,10 +4924,23 @@ function render_dashboard(): void
                     <form class="inline-form" method="get">
                         <input type="hidden" name="page" value="dashboard">
                         <input type="hidden" name="section" value="painel">
+                        <?php /* O evento aberto entra na lista mesmo arquivado: e assim
+                                 que se consulta o resultado de um festival passado sem
+                                 precisar reativa-lo, e sem o seletor parecer vazio. */ ?>
                         <select name="event_id" onchange="this.form.submit()">
                             <option>Selecione um evento</option>
-                            <?php foreach ($events as $item): ?>
-                                <option value="<?= (int)$item['id'] ?>" <?= $eventId === (int)$item['id'] ? 'selected' : '' ?>><?= h($item['name']) ?></option>
+                            <?php
+                            $paraSelecionar = $events;
+                            $jaListado = false;
+                            foreach ($paraSelecionar as $item) {
+                                if ((int)$item['id'] === $eventId) { $jaListado = true; break; }
+                            }
+                            if (!$jaListado && $event) { array_unshift($paraSelecionar, $event); }
+                            ?>
+                            <?php foreach ($paraSelecionar as $item): ?>
+                                <option value="<?= (int)$item['id'] ?>" <?= $eventId === (int)$item['id'] ? 'selected' : '' ?>>
+                                    <?= h($item['name']) ?><?= evento_arquivado($item) ? ' (arquivado)' : '' ?>
+                                </option>
                             <?php endforeach; ?>
                         </select>
                     </form>
@@ -5032,12 +5155,18 @@ function render_dashboard(): void
     <?php if ($event && $section === 'jurados'): ?>
         <section class="management-page">
             <div class="management-head">
-                <h2>Jurados</h2>
+                <h2>Jurados de <?= h($event['name']) ?></h2>
                 <div class="management-actions">
                     <input type="search" placeholder="Buscar jurado...">
                     <a class="button primary" href="#novo-jurado">+ Adicionar Jurado</a>
                 </div>
             </div>
+
+            <?php /* O cadastro de jurado pertence a UM evento. Sem dizer de qual
+                     evento e esta lista, arquivar um evento dava a impressao de
+                     que os jurados dele tinham sumido — eles continuam no banco,
+                     so nao sao os do evento que o painel selecionou. O quadro
+                     abaixo mostra todos, inclusive os de eventos arquivados. */ ?>
             <div class="panel data-panel">
                 <div class="table-wrap">
                     <table class="admin-table responsive-cards">
@@ -5086,6 +5215,8 @@ function render_dashboard(): void
                     <button class="button primary" type="submit"><?= $judgeToEdit ? 'Salvar alterações' : 'Cadastrar jurado' ?></button>
                 </div>
             </form>
+
+            <?php render_todos_os_jurados($db, $eventId); ?>
         </section>
     <?php endif; ?>
 
