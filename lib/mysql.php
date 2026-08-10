@@ -344,12 +344,19 @@ function mysql_sync_events(PDO $pdo, array $itens): void
     $ids = [];
 
     $sqlEvento = $pdo->prepare(
+        /* `arquivado` entra no snapshot como qualquer outro campo do evento.
+           Fora dele, arquivar um evento duraria ate a proxima vez que alguem
+           salvasse qualquer cadastro pela tela — o mesmo cuidado que a marca
+           de troca de senha exigiu. */
         'INSERT INTO events (id, name, description, start_date, end_date, location,
-                             status, event_format, evaluation_minutes, created_at, updated_at)
-         VALUES (:id, :nome, :desc, :inicio, :fim, :local, :status, :formato, :minutos, :criado, :atualizado)
+                             status, arquivado, arquivado_em,
+                             event_format, evaluation_minutes, created_at, updated_at)
+         VALUES (:id, :nome, :desc, :inicio, :fim, :local, :status, :arquivado, :arquivadoem,
+                 :formato, :minutos, :criado, :atualizado)
          ON DUPLICATE KEY UPDATE name = VALUES(name), description = VALUES(description),
              start_date = VALUES(start_date), end_date = VALUES(end_date),
              location = VALUES(location), status = VALUES(status),
+             arquivado = VALUES(arquivado), arquivado_em = VALUES(arquivado_em),
              event_format = VALUES(event_format), evaluation_minutes = VALUES(evaluation_minutes),
              updated_at = VALUES(updated_at)'
     );
@@ -369,6 +376,8 @@ function mysql_sync_events(PDO $pdo, array $itens): void
             ':fim'        => $fim,
             ':local'      => (string) ($e['location'] ?? ''),
             ':status'     => in_array($e['status'] ?? '', ['rascunho', 'aberto', 'encerrado'], true) ? $e['status'] : 'rascunho',
+            ':arquivado'  => !empty($e['arquivado']) ? 1 : 0,
+            ':arquivadoem' => !empty($e['arquivado']) ? (mysql_data($e['arquivado_em'] ?? null) ?? date('Y-m-d H:i:s')) : null,
             ':formato'    => in_array($e['event_format'] ?? '', ['unica', 'fases'], true) ? $e['event_format'] : 'unica',
             ':minutos'    => max(1, (int) ($e['evaluation_minutes'] ?? 136)),
             ':criado'     => mysql_data($e['created_at'] ?? null) ?? date('Y-m-d H:i:s'),
@@ -646,6 +655,8 @@ function mysql_ler_banco(): ?array
                 'date'               => (string) $e['start_date'],
                 'end_date'           => (string) ($e['end_date'] ?? ''),
                 'status'             => (string) $e['status'],
+                'arquivado'          => !empty($e['arquivado']),
+                'arquivado_em'       => mysql_iso($e['arquivado_em'] ?? null),
                 'description'        => (string) ($e['description'] ?? ''),
                 'location'           => (string) ($e['location'] ?? ''),
                 'evaluation_minutes' => (int) $e['evaluation_minutes'],

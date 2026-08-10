@@ -2276,6 +2276,29 @@ td {
     white-space: nowrap;
 }
 
+/* Separador do menu lateral: divide o que vale para o sistema todo do que
+   pertence ao evento aberto. */
+.menu-secao {
+    display: block;
+    margin: var(--esp-4) 0 var(--esp-1);
+    padding: 0 var(--esp-3);
+    color: rgba(255, 255, 255, .6);
+    font-size: var(--t-xs);
+    font-weight: 700;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+}
+
+/* No rail recolhido não há largura para o texto do separador. */
+.is-menu-collapsed .menu-secao {
+    overflow: hidden;
+    height: 1px;
+    margin: var(--esp-3) var(--esp-3) var(--esp-2);
+    padding: 0;
+    color: transparent;
+    background: rgba(255, 255, 255, .18);
+}
+
 /* ---------------------------------------------------------------------------
    8f2. Cronômetro do jurado
  *

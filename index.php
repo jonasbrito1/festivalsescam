@@ -1445,9 +1445,26 @@ function find_by_id(array $items, int $id): ?array
     return null;
 }
 
-function event_options(array $db): array
+function evento_arquivado(array $evento): bool
+{
+    return !empty($evento['arquivado']);
+}
+
+/**
+ * Os eventos que aparecem nas telas do dia a dia.
+ *
+ * Arquivados ficam de fora por padrão. Passar $incluirArquivados = true é o
+ * que a própria tela de Eventos faz, para poder listá-los e reativá-los —
+ * senão o evento arquivado sumiria sem deixar por onde voltar.
+ */
+function event_options(array $db, bool $incluirArquivados = false): array
 {
     $events = $db['events'] ?? [];
+
+    if (!$incluirArquivados) {
+        $events = array_values(array_filter($events, fn(array $e): bool => !evento_arquivado($e)));
+    }
+
     usort($events, fn($a, $b) => strcmp($b['date'] ?? '', $a['date'] ?? ''));
     return $events;
 }
@@ -1456,6 +1473,10 @@ function active_event_id(array $db): ?int
 {
     if (isset($_GET['event_id'])) {
         $requestedId = (int)$_GET['event_id'];
+
+        /* Um evento arquivado ainda pode ser aberto por link direto — é assim
+           que se consulta o resultado de um festival passado. O que ele não
+           faz é ser escolhido sozinho quando ninguém pediu. */
         foreach ($db['events'] ?? [] as $event) {
             if ((int)$event['id'] === $requestedId) {
                 return $requestedId;
@@ -1464,7 +1485,40 @@ function active_event_id(array $db): ?int
     }
 
     $events = event_options($db);
+
+    /* Sem nenhum evento ativo, cai no arquivado mais recente em vez de deixar
+       o painel sem evento nenhum. */
+    if (!$events) {
+        $events = event_options($db, true);
+    }
+
     return $events ? (int)$events[0]['id'] : null;
+}
+
+/**
+ * Módulos que pertencem a um evento.
+ *
+ * O painel do administrador tem um menu fixo — Eventos, Jurados, Critérios —
+ * que serve para qualquer festival. A Planilha SER SESC não: ela é de UM
+ * projeto, com uma estrutura própria de turmas e países, e não faz sentido
+ * para os outros eventos que vierem a existir neste mesmo sistema.
+ *
+ * Em vez de item fixo no menu, ela passa a ser um MÓDULO DO EVENTO: aparece
+ * só quando o evento aberto participa dela. É este o ponto de extensão para
+ * os próximos — um módulo novo entra aqui, com a própria condição, sem
+ * poluir o menu de quem não o usa.
+ *
+ * @return array<int,array{chave:string, icone:string, titulo:string}>
+ */
+function modulos_do_evento(?int $eventId): array
+{
+    $modulos = [];
+
+    if ($eventId !== null && function_exists('ser_evento_participa') && ser_evento_participa($eventId)) {
+        $modulos[] = ['chave' => 'planilha', 'icone' => 'planilha', 'titulo' => 'Planilha SER SESC'];
+    }
+
+    return $modulos;
 }
 
 function items_for_event(array $items, int $eventId): array
@@ -1999,8 +2053,12 @@ function handle_post(): void
             $evento = find_by_id($db['events'] ?? [], (int)$judge['event_id']);
 
             /* Evento em rascunho não aparece: quem está montando o cadastro
-               não quer o jurado entrando antes da hora. */
-            if (!$evento || ($evento['status'] ?? '') === 'rascunho') {
+               não quer o jurado entrando antes da hora. Arquivado também não:
+               é um festival que já passou, e a lista do jurado precisa mostrar
+               só o que ele tem para fazer hoje. */
+            if (!$evento
+                || ($evento['status'] ?? '') === 'rascunho'
+                || evento_arquivado($evento)) {
                 continue;
             }
 
@@ -2101,6 +2159,51 @@ function handle_post(): void
         db_write($db);
         flash('Evento criado com critérios padrão.');
         redirect_to('dashboard', ['event_id' => $eventId, 'section' => 'jurados']);
+    }
+
+    /* Arquivar e reativar.
+     *
+     * Não apaga nada: o evento sai das telas do dia a dia e continua inteiro
+     * no banco, com notas, participantes e relatórios. Ver o comentário em
+     * sql/mysql_08_arquivar_evento.sql sobre por que isto não é o `status`
+     * nem uma exclusão. */
+    if ($action === 'arquivar_evento' || $action === 'reativar_evento') {
+        require_admin();
+
+        $eventId = (int)($_POST['event_id'] ?? 0);
+        $arquivar = $action === 'arquivar_evento';
+        $db['events'] = $db['events'] ?? [];
+        $nome = '';
+
+        foreach ($db['events'] as $i => $evento) {
+            if ((int)$evento['id'] !== $eventId) {
+                continue;
+            }
+
+            $db['events'][$i]['arquivado'] = $arquivar;
+            $db['events'][$i]['arquivado_em'] = $arquivar ? date('c') : '';
+            $nome = (string)$evento['name'];
+            break;
+        }
+
+        if ($nome === '') {
+            flash('Evento não encontrado.', 'error');
+            redirect_to('dashboard', ['section' => 'eventos']);
+        }
+
+        db_write($db);
+
+        /* Se o evento arquivado era o que estava selecionado, a sessão
+           continuaria apontando para ele e o painel abriria num evento que
+           acabou de sumir da lista. */
+        if ($arquivar && (int)($_SESSION['evento_ativo'] ?? 0) === $eventId) {
+            unset($_SESSION['evento_ativo']);
+        }
+
+        flash($arquivar
+            ? 'Evento "' . $nome . '" arquivado. Ele sai das telas, mas nada foi apagado.'
+            : 'Evento "' . $nome . '" reativado.');
+        redirect_to('dashboard', ['section' => 'eventos']);
     }
 
     if ($action === 'update_event') {
@@ -4568,7 +4671,6 @@ function render_dashboard(): void
         ['apuracao',      'apuracao',     'Apuração'],
         ['relatorios',    'relatorio',    'Relatórios'],
         ['placar',        'placar',       'Placar em tempo real'],
-        ['planilha',      'planilha',     'Planilha SER SESC'],
         ['exportar',      'exportar',     'Exportar notas'],
         ['usuarios',      'pessoa',       'Usuários e senhas'],
         ['whatsapp',      'whatsapp',     'WhatsApp'],
@@ -4591,6 +4693,22 @@ function render_dashboard(): void
                 <?php foreach ($itensAdmin as [$secao, $icone, $titulo]): ?>
                     <?= menu_item('?page=dashboard&section=' . $secao . $sufixo, $icone, $titulo, $section === $secao) ?>
                 <?php endforeach; ?>
+
+                <?php /* Módulos do evento aberto, separados do menu fixo: eles
+                         mudam conforme o evento, e misturá-los com Eventos e
+                         Jurados daria a impressão de que valem para todos. */ ?>
+                <?php $modulos = modulos_do_evento($eventId); ?>
+                <?php if ($modulos): ?>
+                    <span class="menu-secao">Deste evento</span>
+                    <?php foreach ($modulos as $modulo): ?>
+                        <?= menu_item(
+                            '?page=dashboard&section=' . $modulo['chave'] . $sufixo,
+                            $modulo['icone'],
+                            $modulo['titulo'],
+                            $section === $modulo['chave']
+                        ) ?>
+                    <?php endforeach; ?>
+                <?php endif; ?>
             </nav>
             <form method="post" class="sidebar-logout">
                 <input type="hidden" name="action" value="logout">
@@ -4789,20 +4907,48 @@ function render_dashboard(): void
                     <table class="admin-table responsive-cards">
                         <thead><tr><th>Nome do Evento</th><th>Data</th><th>Local</th><th>Status</th><th>Ações</th></tr></thead>
                         <tbody>
-                        <?php if (!$events): ?>
+                        <?php /* Só esta tela lista os arquivados. Sem isso, arquivar
+                                 seria um caminho sem volta pela interface. */ ?>
+                        <?php $todosEventos = event_options($db, true); ?>
+                        <?php if (!$todosEventos): ?>
                             <tr><td colspan="5">Nenhum evento cadastrado.</td></tr>
                         <?php endif; ?>
-                        <?php foreach ($events as $item): ?>
+                        <?php foreach ($todosEventos as $item): ?>
                             <tr>
                                 <td data-label="Nome do Evento"><a class="table-link" href="?page=dashboard&section=eventos&event_id=<?= (int)$item['id'] ?>"><?= h($item['name']) ?></a></td>
                                 <td data-label="Data"><?= h($item['date']) ?></td>
                                 <td data-label="Local"><?= h($item['description'] ?: 'Sesc Centro') ?></td>
-                                <td data-label="Status"><span class="status-pill <?= h($item['status']) ?>"><?= h($item['status']) ?></span></td>
+                                <td data-label="Status">
+                                    <span class="status-pill <?= h($item['status']) ?>"><?= h($item['status']) ?></span>
+                                    <?php if (evento_arquivado($item)): ?>
+                                        <span class="status-pill">arquivado</span>
+                                    <?php endif; ?>
+                                </td>
                                 <td data-label="Ações">
                                     <div class="table-actions">
                                         <a class="icon-action" href="?page=dashboard&section=eventos&event_id=<?= (int)$item['id'] ?>&event_edit=<?= (int)$item['id'] ?>#novo-evento">Editar</a>
                                         <a class="icon-action" href="?page=dashboard&section=configuracoes&event_id=<?= (int)$item['id'] ?>">Configurar</a>
-                                        <form method="post" class="inline-delete-form" onsubmit="return confirm('Deseja excluir este evento? Essa ação também remove jurados, participantes, critérios e notas vinculados.');">
+
+                                        <?php /* Arquivar vem ANTES de excluir e sem confirmação:
+                                                 é a saída segura para tirar um evento da frente,
+                                                 e não custa nada desfazer. */ ?>
+                                        <?php if (evento_arquivado($item)): ?>
+                                            <form method="post" class="em-linha">
+                                                <input type="hidden" name="action" value="reativar_evento">
+                                                <input type="hidden" name="event_id" value="<?= (int)$item['id'] ?>">
+                                                <button type="submit" class="icon-action">Reativar</button>
+                                            </form>
+                                        <?php else: ?>
+                                            <form method="post" class="em-linha">
+                                                <input type="hidden" name="action" value="arquivar_evento">
+                                                <input type="hidden" name="event_id" value="<?= (int)$item['id'] ?>">
+                                                <button type="submit" class="icon-action">Arquivar</button>
+                                            </form>
+                                        <?php endif; ?>
+
+                                        <?php $qtdNotas = count(items_for_event($db['votes'] ?? [], (int)$item['id'])); ?>
+                                        <form method="post" class="inline-delete-form"
+                                              onsubmit="return confirm('Excluir <?= h(addslashes($item['name'])) ?>?\n\nIsto apaga tambem <?= (int)$qtdNotas ?> nota(s), alem de jurados, participantes e criterios. Nao ha como desfazer.\n\nSe o objetivo e so tirar da tela, use Arquivar.');">
                                             <input type="hidden" name="action" value="delete_event">
                                             <input type="hidden" name="event_id" value="<?= (int)$item['id'] ?>">
                                             <button type="submit" class="icon-action danger">Excluir</button>

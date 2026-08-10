@@ -139,6 +139,34 @@ function ser_notas_dos_jurados(): array
     return $saida;
 }
 
+/**
+ * Este evento faz parte do projeto SER SESC?
+ *
+ * É o que decide se a Planilha aparece no menu. Um evento que não alimenta
+ * nenhuma célula dela não tem por que mostrá-la.
+ */
+function ser_evento_participa(int $eventId): bool
+{
+    static $eventos = null;
+
+    if ($eventos === null) {
+        $eventos = [];
+        $pdo = mysql_conexao();
+
+        if ($pdo) {
+            try {
+                foreach ($pdo->query('SELECT DISTINCT event_id FROM ser_vinculo') as $l) {
+                    $eventos[(int)$l['event_id']] = true;
+                }
+            } catch (Throwable $e) {
+                error_log('SER SESC evento_participa: ' . $e->getMessage());
+            }
+        }
+    }
+
+    return isset($eventos[$eventId]);
+}
+
 /** As células que têm origem nos jurados, mesmo que ainda sem nota lançada. */
 function ser_celulas_vinculadas(): array
 {
