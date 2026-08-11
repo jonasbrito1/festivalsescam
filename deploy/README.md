@@ -75,6 +75,37 @@ capturar a senha dos jurados na própria tela de login.
 
 ---
 
+## Cache dos arquivos estáticos
+
+No bloco do site (`/etc/nginx/sites-enabled/festival.sescam.online`):
+
+```nginx
+location ^~ /public/assets/ {
+    add_header X-Content-Type-Options    "nosniff"                              always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains"  always;
+    add_header Cache-Control             "public, max-age=31536000, immutable"  always;
+    access_log off;
+    try_files $uri =404;
+}
+```
+
+Um ano de cache é seguro porque o endereço de cada arquivo carrega a data de
+modificação (`ui.css?v=1786…`, montado por `asset()` no PHP): publicar uma
+correção muda a data, muda o endereço, e a versão nova chega na hora. O
+`immutable` diz ao navegador que aquele endereço não precisa ser revalidado
+nunca — poupa uma ida ao servidor por arquivo a cada recarregamento, que é o
+que mais acontece no tablet do jurado.
+
+Os dois `add_header` de segurança estão repetidos ali de propósito: no nginx,
+qualquer `add_header` dentro de um `location` descarta os herdados do
+servidor. Sem repetir, as respostas de CSS e JS sairiam sem eles.
+
+O HTML fica de fora: as páginas saem com `no-store`, porque uma tela de
+apuração guardada no navegador mostraria nota velha — ou, pior, mostraria a
+tela de outra pessoa depois do logout.
+
+---
+
 ## Variáveis de ambiente
 
 No pool do PHP-FPM (`/etc/php/8.3/fpm/pool.d/festival.conf`):

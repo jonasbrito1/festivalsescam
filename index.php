@@ -2,7 +2,13 @@
 const DATA_DIR = __DIR__ . '/data';
 const SESSION_DIR = DATA_DIR . '/sessions';
 const DB_FILE = DATA_DIR . '/db.json';
+/* Assinatura do que ja esta gravado em db.json — ver write_local_database(). */
+const DB_ASSINATURA_FILE = DATA_DIR . '/db.assinatura';
 const PARTICIPANT_UPLOAD_DIR = __DIR__ . '/public/uploads/participants';
+
+/* Cache minimo: memoria de uma requisicao, para nao perguntar a mesma coisa
+ * ao banco varias vezes na mesma tela — ver lib/cache.php. */
+require_once __DIR__ . '/lib/cache.php';
 
 /* [MIGRACAO MySQL] Camada de dados MySQL. Fica inerte enquanto
  * FESTIVAL_DB_MODO nao for definido — ver lib/mysql.php. */
@@ -364,8 +370,65 @@ function max_record_id(array $items): int
     return $max;
 }
 
+/**
+ * Atualiza a cópia local no máximo uma vez por minuto.
+ *
+ * Em modo primário o MySQL é o banco; o db.json é a cópia que socorre a
+ * LEITURA se o banco cair (a escrita, nesse caso, é recusada — ver db_write).
+ * Sendo socorro, ela não precisa ser refeita a cada página aberta: precisa
+ * existir e estar recente. Refazê-la de minuto em minuto custa quase nada e
+ * mantém a garantia — no pior caso, um banco que caia agora deixa o sistema
+ * lendo dados de até um minuto atrás, e nenhuma escrita é dada como salva.
+ *
+ * Gravação de verdade não passa por aqui: db_write() atualiza a cópia na hora,
+ * sem espera.
+ */
+const COPIA_LOCAL_INTERVALO = 60;
+
+function copia_local_atualizar(array $db): void
+{
+    clearstatcache(true, DB_ASSINATURA_FILE);
+    $ultima = @filemtime(DB_ASSINATURA_FILE) ?: 0;
+
+    if (time() - $ultima < COPIA_LOCAL_INTERVALO && is_file(DB_FILE)) {
+        return;
+    }
+
+    write_local_database($db);
+}
+
+/**
+ * Grava a cópia local — mas só quando ela realmente mudou.
+ *
+ * Em modo primário o MySQL é o banco e o db.json é cópia de segurança. Ainda
+ * assim, toda leitura reescrevia o arquivo inteiro: 1,2 MB por página aberta,
+ * com trava exclusiva. Numa tela que se atualiza sozinha a cada poucos
+ * segundos, isso é o mesmo arquivo sendo regravado idêntico o dia todo — e,
+ * pior, cada requisição esperando a trava da anterior justamente quando há
+ * mais gente usando o sistema ao mesmo tempo.
+ *
+ * A assinatura do conteúdo fica num arquivo à parte, de 40 bytes. Conferir 40
+ * bytes é barato; regravar 1,2 MB não é. Se o db.json for apagado ou trocado
+ * por fora, o tamanho não confere e a gravação acontece — a conferência erra
+ * para o lado de gravar.
+ */
 function write_local_database(array $db): void
 {
+    $json = json_encode($db, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+    $assinatura = md5($json) . ':' . strlen($json);
+
+    clearstatcache(true, DB_FILE);
+
+    if (is_file(DB_FILE)
+        && filesize(DB_FILE) === strlen($json)
+        && @file_get_contents(DB_ASSINATURA_FILE) === $assinatura) {
+        /* Conferido agora e igual: registra a conferência para que a próxima
+           leitura dentro do minuto nem precise chegar até aqui. */
+        @touch(DB_ASSINATURA_FILE);
+
+        return;
+    }
+
     $handle = fopen(DB_FILE, 'c+');
     if (!$handle) {
         throw new RuntimeException('Não foi possível abrir o arquivo de dados.');
@@ -374,10 +437,15 @@ function write_local_database(array $db): void
     flock($handle, LOCK_EX);
     ftruncate($handle, 0);
     rewind($handle);
-    fwrite($handle, json_encode($db, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+    fwrite($handle, $json);
     fflush($handle);
     flock($handle, LOCK_UN);
     fclose($handle);
+
+    /* Depois do arquivo, nunca antes: se a gravação falhar no meio, a
+       assinatura antiga não confere com o que ficou em disco e a próxima
+       tentativa regrava, em vez de dar o arquivo quebrado como bom. */
+    @file_put_contents(DB_ASSINATURA_FILE, $assinatura, LOCK_EX);
 }
 
 function read_local_database(): array
@@ -967,7 +1035,22 @@ function sql_write_database($connection, array $db): void
     }
 }
 
+/**
+ * O banco inteiro.
+ *
+ * Lido UMA vez por requisição. Antes, cada tela que precisasse dos dados
+ * refazia as oito consultas e reescrevia a cópia local de 1,2 MB — numa
+ * requisição que grava e depois mostra o resultado, isso acontecia duas vezes
+ * seguidas, com os mesmos dados. Toda escrita chama cache_esquecer('db'), de
+ * modo que ler depois de gravar continua devolvendo o que acabou de ser
+ * gravado.
+ */
 function db_read(): array
+{
+    return cache_lembrar('db', 'db_ler_do_banco');
+}
+
+function db_ler_do_banco(): array
 {
     ensure_database();
 
@@ -982,7 +1065,7 @@ function db_read(): array
 
         if ($doMysql !== null) {
             $doMysql = normalize_database($doMysql);
-            write_local_database($doMysql);
+            copia_local_atualizar($doMysql);
 
             return $doMysql;
         }
@@ -1042,6 +1125,11 @@ function db_write(array $db): void
     }
 
     write_local_database($db);
+
+    /* O banco mudou: o que estava guardado desta requisição virou passado.
+       Sem isto, uma tela que grava e em seguida mostra o resultado exibiria o
+       estado de antes da gravação. */
+    cache_esquecer('db');
 
     if ($sqlSaved) {
         $_SESSION['storage_backend'] = 'sqlsrv';
@@ -3225,6 +3313,12 @@ function handle_post(): void
                 str_starts_with($signatureTouch, 'data:image/') ? $signatureTouch : ''
             );
 
+            /* Escrita dirigida: nao passa por db_write(), entao o descarte do
+               que estava guardado tem de ser feito aqui. As notas acabaram de
+               mudar; quem ler daqui para a frente le do banco. */
+            cache_esquecer('db');
+            cache_esquecer('ser');
+
             /* Em modo primario o jurado nao pode ver "Notas salvas" se a nota
              * nao chegou ao banco que manda. Melhor pedir para repetir do que
              * descobrir a ausencia so na apuracao. */
@@ -3391,6 +3485,9 @@ function handle_post(): void
                             mysql_salvar_votos($eventId, $judgeId, (int)$p['id'], $faltantes);
                         }
                     }
+
+                    cache_esquecer('db');
+                    cache_esquecer('ser');
                 }
             }
         }

@@ -98,6 +98,11 @@ function ser_disponivel(): bool
  */
 function ser_notas_dos_jurados(): array
 {
+    return cache_lembrar('ser:notas', 'ser_notas_dos_jurados_consultar');
+}
+
+function ser_notas_dos_jurados_consultar(): array
+{
     $pdo = mysql_conexao();
 
     if (!$pdo) {
@@ -170,6 +175,11 @@ function ser_evento_participa(int $eventId): bool
 /** As células que têm origem nos jurados, mesmo que ainda sem nota lançada. */
 function ser_celulas_vinculadas(): array
 {
+    return cache_lembrar('ser:vinculos', 'ser_celulas_vinculadas_consultar');
+}
+
+function ser_celulas_vinculadas_consultar(): array
+{
     $pdo = mysql_conexao();
 
     if (!$pdo) {
@@ -210,6 +220,11 @@ function ser_celulas_vinculadas(): array
  *   ]
  */
 function ser_ler(): array
+{
+    return cache_lembrar('ser:planilha', 'ser_ler_do_banco');
+}
+
+function ser_ler_do_banco(): array
 {
     $pdo = mysql_conexao();
 
@@ -579,6 +594,8 @@ function ser_gravar_nota(string $alvo, int $id, string $campo, ?float $nota, str
             }
         }
 
+        cache_esquecer('ser');
+
         return ['ok' => true, 'mensagem' => 'Salvo.'];
     } catch (Throwable $e) {
         error_log('SER SESC gravar_nota: ' . $e->getMessage());
@@ -612,6 +629,8 @@ function ser_gravar_turma(int $id, string $turma, string $pais): array
             ':pais'  => mb_substr($pais, 0, 60),
             ':id'    => $id,
         ]);
+
+        cache_esquecer('ser');
 
         return ['ok' => true, 'mensagem' => 'Turma atualizada.'];
     } catch (Throwable $e) {
@@ -659,6 +678,8 @@ function ser_criar_turma(int $blocoId, string $turma, string $pais): array
             ':bloco2' => $blocoId,
         ]);
 
+        cache_esquecer('ser');
+
         return ['ok' => true, 'mensagem' => 'Turma adicionada.'];
     } catch (Throwable $e) {
         error_log('SER SESC criar_turma: ' . $e->getMessage());
@@ -685,6 +706,8 @@ function ser_excluir_turma(int $id): array
     try {
         $sql = $pdo->prepare('DELETE FROM ser_turmas WHERE id = :id');
         $sql->execute([':id' => $id]);
+
+        cache_esquecer('ser');
 
         return ['ok' => true, 'mensagem' => 'Turma removida.'];
     } catch (Throwable $e) {
@@ -1206,6 +1229,8 @@ function ser_xlsx_aplicar(array $blocos, string $autor): array
     $partes[] = $comNota > 0
         ? "{$comNota} turma(s) com nota vinda do arquivo"
         : 'nenhuma nota no arquivo (só o cadastro foi sincronizado)';
+
+    cache_esquecer('ser');
 
     return ['ok' => true, 'mensagem' => 'Importado: ' . implode(', ', $partes) . '.'];
 }

@@ -51,48 +51,43 @@ const REGRAS_PADRAO = [
  */
 function regras_do_evento(?int $eventId): array
 {
-    static $cache = [];
-
     if ($eventId === null) {
         return REGRAS_PADRAO;
     }
 
-    if (isset($cache[$eventId])) {
-        return $cache[$eventId];
-    }
+    /* Consultadas a cada critério da ficha e a cada nota gravada — dezenas de
+       vezes na mesma tela, sempre com a mesma resposta. */
+    return cache_lembrar('regras:' . $eventId, static function () use ($eventId): array {
+        $pdo = mysql_conexao();
 
-    $cache[$eventId] = REGRAS_PADRAO;
-    $pdo = mysql_conexao();
+        if (!$pdo) {
+            return REGRAS_PADRAO;
+        }
 
-    if (!$pdo) {
-        return $cache[$eventId];
-    }
+        try {
+            $sql = $pdo->prepare('SELECT * FROM evento_regras WHERE event_id = ?');
+            $sql->execute([$eventId]);
+            $r = $sql->fetch();
+        } catch (Throwable $e) {
+            error_log('regras_do_evento: ' . $e->getMessage());
 
-    try {
-        $sql = $pdo->prepare('SELECT * FROM evento_regras WHERE event_id = ?');
-        $sql->execute([$eventId]);
-        $r = $sql->fetch();
-    } catch (Throwable $e) {
-        error_log('regras_do_evento: ' . $e->getMessage());
+            return REGRAS_PADRAO;
+        }
 
-        return $cache[$eventId];
-    }
+        if (!$r) {
+            return REGRAS_PADRAO;
+        }
 
-    if (!$r) {
-        return $cache[$eventId];
-    }
-
-    $cache[$eventId] = [
-        'nota_minima'             => (float)$r['nota_minima'],
-        'nota_maxima'             => (float)$r['nota_maxima'],
-        'passo'                   => (float)$r['passo'],
-        'justificativa_abaixo_de' => $r['justificativa_abaixo_de'] === null ? null : (float)$r['justificativa_abaixo_de'],
-        'nota_ao_finalizar'       => $r['nota_ao_finalizar'] === null ? null : (float)$r['nota_ao_finalizar'],
-        'observacao'              => (string)($r['observacao'] ?? ''),
-        'propria'                 => true,
-    ];
-
-    return $cache[$eventId];
+        return [
+            'nota_minima'             => (float)$r['nota_minima'],
+            'nota_maxima'             => (float)$r['nota_maxima'],
+            'passo'                   => (float)$r['passo'],
+            'justificativa_abaixo_de' => $r['justificativa_abaixo_de'] === null ? null : (float)$r['justificativa_abaixo_de'],
+            'nota_ao_finalizar'       => $r['nota_ao_finalizar'] === null ? null : (float)$r['nota_ao_finalizar'],
+            'observacao'              => (string)($r['observacao'] ?? ''),
+            'propria'                 => true,
+        ];
+    });
 }
 
 /** A nota está dentro da faixa permitida pelo evento? */
@@ -129,28 +124,35 @@ function numero_pt(float $n): string
  * PENALIDADES
  * ======================================================================== */
 
-/** Catálogo de penalidades previstas para o evento. */
+/**
+ * Catálogo de penalidades previstas para o evento.
+ *
+ * Consultado uma vez para decidir se "Penalidades" entra no menu e de novo
+ * para desenhar a tela. Guardar a resposta evita a segunda ida ao banco.
+ */
 function penalidades_do_evento(int $eventId): array
 {
-    $pdo = mysql_conexao();
+    return cache_lembrar('penalidades:catalogo:' . $eventId, static function () use ($eventId): array {
+        $pdo = mysql_conexao();
 
-    if (!$pdo) {
-        return [];
-    }
+        if (!$pdo) {
+            return [];
+        }
 
-    try {
-        $sql = $pdo->prepare(
-            'SELECT id, nome, descricao, valor FROM evento_penalidades
-              WHERE event_id = ? ORDER BY ordem, id'
-        );
-        $sql->execute([$eventId]);
+        try {
+            $sql = $pdo->prepare(
+                'SELECT id, nome, descricao, valor FROM evento_penalidades
+                  WHERE event_id = ? ORDER BY ordem, id'
+            );
+            $sql->execute([$eventId]);
 
-        return $sql->fetchAll();
-    } catch (Throwable $e) {
-        error_log('penalidades_do_evento: ' . $e->getMessage());
+            return $sql->fetchAll();
+        } catch (Throwable $e) {
+            error_log('penalidades_do_evento: ' . $e->getMessage());
 
-        return [];
-    }
+            return [];
+        }
+    });
 }
 
 /**
@@ -159,6 +161,11 @@ function penalidades_do_evento(int $eventId): array
  * @return array<int,array{total:float, itens:array}>
  */
 function penalidades_aplicadas(int $eventId): array
+{
+    return cache_lembrar('penalidades:aplicadas:' . $eventId, static fn(): array => penalidades_aplicadas_consultar($eventId));
+}
+
+function penalidades_aplicadas_consultar(int $eventId): array
 {
     $pdo = mysql_conexao();
 
@@ -229,6 +236,8 @@ function penalidade_aplicar(int $eventId, int $participantId, int $penalidadeId,
             ':autor'        => mb_substr($autor, 0, 120),
         ]);
 
+        cache_esquecer('penalidades');
+
         return ['ok' => true, 'mensagem' => 'Penalidade aplicada.'];
     } catch (Throwable $e) {
         error_log('penalidade_aplicar: ' . $e->getMessage());
@@ -248,6 +257,8 @@ function penalidade_remover(int $id, int $eventId): array
     try {
         $sql = $pdo->prepare('DELETE FROM participante_penalidades WHERE id = ? AND event_id = ?');
         $sql->execute([$id, $eventId]);
+
+        cache_esquecer('penalidades');
 
         return ['ok' => true, 'mensagem' => 'Penalidade removida.'];
     } catch (Throwable $e) {
