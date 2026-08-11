@@ -2676,6 +2676,513 @@ td {
     }
 }
 
+/* ---------------------------------------------------------------------------
+   14. A ficha do jurado cabendo no aparelho dele
+ *
+ * ---------------------------------------------------------------------------
+ * O QUE ESTAVA ERRADO, MEDIDO
+ * ---------------------------------------------------------------------------
+ * Num Galaxy Tab S9 em pé (712px), a ficha de 5 critérios tinha 3.987px — e
+ * 767px deles vinham ANTES do primeiro campo de nota. Ou seja: o jurado rolava
+ * quase uma tela inteira de cabeçalho, título e botão antes de poder trabalhar.
+ * Cada critério ocupava 391px. Na ficha de 11 critérios do Festival de
+ * Calouros, isso dava 5.621px: NOVE telas de celular para lançar uma ficha.
+ *
+ * A conta não fecha porque o espaço estava sendo gasto com o que não é o
+ * trabalho: um título "Avaliar Participante" acima de um cartão que já diz o
+ * nome de quem está sendo avaliado; rótulos ESCALA e NOTA empilhados ACIMA dos
+ * controles, cada um levando 25px; e o número da nota numa linha própria,
+ * embaixo das bolhas, quando cabia ao lado.
+ *
+ * ---------------------------------------------------------------------------
+ * O QUE MUDA
+ * ---------------------------------------------------------------------------
+ * Nada é escondido do que se precisa para julgar: o nome do critério, a
+ * descrição, a escala, a nota e a justificativa continuam todos lá, e maiores
+ * do que o mínimo para o dedo. O que sai é a moldura.
+ *
+ * O cabeçalho passa a acompanhar a rolagem. O jurado tem tempo contado, e o
+ * cronômetro ficava a 4.000px de distância — para conferir o relógio, ele
+ * perdia o lugar na ficha.
+   ------------------------------------------------------------------------- */
+@media (pointer: coarse) {
+    /* -- 1. O cabeçalho acompanha a rolagem, fino -------------------------- */
+
+    /* `min-height: 166px` vinha do desenho de desktop, onde o cabeçalho tem
+       três colunas largas. No celular ele sobrava: mesmo com uma linha de
+       texto dentro, a barra continuava com 166px reservados — quase um quinto
+       da tela, presa no topo, mostrando espaço em branco. */
+    /* Uma linha só: menu, evento, relógio, conta. Antes o cabeçalho quebrava
+       em três fileiras — o botão do menu sozinho na primeira, o nome do evento
+       na segunda, relógio e conta na terceira — e chegava a 171px preso no
+       topo. Só o nome do evento estica; os outros três têm largura própria e
+       não empurram ninguém. */
+    .judge-event-head {
+        position: sticky;
+        top: 0;
+        z-index: 40;
+        display: flex;
+        flex-wrap: nowrap;
+        align-items: center;
+        min-height: 0;
+        gap: var(--esp-2);
+        padding-block: var(--esp-2);
+        background: #fff;
+        box-shadow: 0 2px 10px rgba(15, 23, 42, .07);
+    }
+
+    .judge-event-head > div:not(.judge-timer):not(.admin-profile) {
+        flex: 1 1 auto;
+        min-width: 0;
+    }
+
+    .judge-event-head .judge-timer,
+    .judge-event-head .admin-profile {
+        flex: 0 0 auto;
+        margin-left: 0;
+    }
+
+    .judge-event-head h1 {
+        margin: 0;
+    }
+
+    /* Duas linhas de nome de evento viram uma. O nome inteiro continua no
+       menu da conta, e a modalidade aberta é a mesma a tela toda. */
+    .judge-event-head h1 {
+        font-size: var(--t-md);
+        line-height: 1.25;
+        overflow: hidden;
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+    }
+
+    /* "Evento:" acima do nome do evento não informa nada. */
+    .judge-evento-rotulo {
+        display: none;
+    }
+
+    .judge-event-head p {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--esp-1) var(--esp-3);
+        margin: 2px 0 0;
+        line-height: 1.3;
+    }
+
+    /* -- 2. Alvos de toque que ficaram para trás --------------------------- */
+
+    /* 104x14px: o atalho mais usado do dia do festival era o menor alvo da
+       tela. */
+    /* A área do dedo cresce para 44px, mas a margem negativa impede que ela
+       empurre o cabeçalho: o link continua ocupando a altura de uma linha de
+       texto no fluxo, e ganha 12px de alcance para cada lado. */
+    .judge-trocar {
+        display: inline-flex;
+        align-items: center;
+        min-height: 44px;
+        margin-block: -12px;
+        padding: 0 var(--esp-2);
+        font-weight: 700;
+    }
+
+    /* As setas ‹ › de trocar de participante tinham 20px de largura. */
+    .participant-switch a {
+        display: inline-grid;
+        place-items: center;
+        min-width: 48px;
+        min-height: 48px;
+        font-size: 1.4rem;
+    }
+
+    .checklist-toggle {
+        min-height: 48px;
+    }
+
+    .checklist-toggle input[type="checkbox"] {
+        width: 28px;
+        height: 28px;
+        flex: 0 0 auto;
+    }
+
+    /* -- 3. A faixa de trabalho: uma linha, não três ----------------------- */
+
+    /* O cartão logo abaixo mostra a foto, o nome e a ordem de quem está sendo
+       avaliado. O título repetia isso em letra grande. */
+    .judge-work-head > h2 {
+        display: none;
+    }
+
+    .judge-work-head {
+        display: flex;
+        flex-wrap: nowrap;
+        align-items: center;
+        gap: var(--esp-2);
+        padding-block: var(--esp-3);
+    }
+
+    /* `1 1 auto` fazia a faixa esticar até a borda e empurrar o botão para a
+       linha de baixo, gastando 60px por nada. */
+    .judge-work-head .participant-switch {
+        flex: 0 1 auto;
+        margin-right: auto;
+    }
+
+    /* Finalizar encerra a ficha inteira e não tem volta. Fica disponível, mas
+       deixa de ter o mesmo peso visual de Salvar — que é o que o jurado faz a
+       cada participante. */
+    .judge-work-head form .button {
+        min-height: 44px;
+        padding-inline: var(--esp-4);
+        font-size: var(--t-sm);
+    }
+
+    .judge-tutorial {
+        margin-bottom: var(--esp-3);
+    }
+
+    /* -- 4. O critério: escala e nota na mesma linha ----------------------- */
+    .criterion-row {
+        grid-template-columns: minmax(0, 1fr);
+        gap: var(--esp-3);
+        padding: var(--esp-3);
+    }
+
+    .criterion-name {
+        gap: var(--esp-3);
+    }
+
+    .criterion-name .metric-icon {
+        width: 38px;
+        height: 38px;
+        flex: 0 0 auto;
+    }
+
+    /* Escala e nota lado a lado. Empilhadas, eram 155px por critério; assim
+       são 56px — e o número aparece ao lado da bolha que o gerou, que é onde
+       o olho já está. */
+    .criterion-row .score-picker-wrap {
+        grid-column: 1;
+        grid-template-columns: auto minmax(0, 1fr);
+        align-items: center;
+        gap: var(--esp-2) var(--esp-3);
+    }
+
+    .criterion-row .score-input-wrap {
+        grid-column: 1;
+        grid-template-columns: auto minmax(0, 1fr);
+        align-items: center;
+        gap: var(--esp-3);
+        max-width: 260px;
+    }
+
+    /* Os rótulos continuam, mas ao lado do controle em vez de acima dele. */
+    .score-label-mobile {
+        display: block;
+        min-width: 3.6rem;
+        font-size: var(--t-xs);
+    }
+
+    /* Os décimos abrem embaixo, ocupando as duas colunas. */
+    .criterion-row .decimal-picker:not([hidden]) {
+        grid-column: 1 / -1;
+    }
+
+    /* Escala longa em grade, não em linha corrida.
+     *
+     * Com `flex`, as onze bolhas de 48px cabiam cinco por fileira em 308px e
+     * sobravam 18px inúteis na ponta — três fileiras, 164px. Em grade com
+     * `auto-fit`, cabem seis e cada uma cresce para ocupar a sobra: duas
+     * fileiras, 86px. Mesmo tamanho de alvo, uma fileira a menos por critério,
+     * onze critérios por ficha. */
+    .criterion-row:not(.escala-curta) .score-picker {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(40px, 1fr));
+        gap: 6px;
+    }
+
+    .criterion-row:not(.escala-curta) .score-picker label,
+    .criterion-row:not(.escala-curta) .score-picker span {
+        width: 100%;
+        min-width: 0;
+    }
+
+    /* -- 5. Justificativa: rótulo em uma linha ----------------------------- */
+    .criterion-justificativa {
+        margin-top: var(--esp-2);
+        padding-top: var(--esp-2);
+    }
+
+    .criterion-justificativa > span {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: var(--esp-2);
+    }
+
+    .criterion-justificativa small {
+        display: inline;
+    }
+
+    .criterion-justificativa textarea {
+        min-height: 68px;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   Tablet
+ *
+ * Aqui o número de bolhas decide o desenho, e as duas escolhas são opostas:
+ *
+ *   escala curta (9 e 10) — três colunas: critério | escala | nota. Sobra
+ *   largura, e empilhar escala e nota deixava um vão vazio do tamanho de uma
+ *   linha em cada critério.
+ *
+ *   escala longa (0 a 10) — duas colunas, com a nota embaixo das bolhas.
+ *   Reservar uma terceira coluna para a nota estreitaria a das bolhas, e onze
+ *   bolhas em coluna estreita ganham uma fileira inteira a mais: medido, sai
+ *   mais alto (243px) do que deixar a nota descer uma linha (204px).
+   ------------------------------------------------------------------------- */
+@media (pointer: coarse) and (min-width: 660px) {
+    .criterion-row {
+        grid-template-columns: minmax(0, 1fr) minmax(300px, .95fr);
+        align-items: start;
+        column-gap: var(--esp-4);
+    }
+
+    .criterion-row .criterion-name {
+        grid-column: 1;
+    }
+
+    .criterion-row .score-picker-wrap,
+    .criterion-row .score-input-wrap {
+        grid-column: 2;
+    }
+
+    .criterion-row .score-input-wrap {
+        max-width: none;
+    }
+
+    .criterion-row .criterion-justificativa {
+        grid-column: 1 / -1;
+    }
+
+    /* Na escala longa os rótulos ESCALA e NOTA saem, como já era antes nesta
+       largura. Ao lado do controle eles comiam 58px da coluna das bolhas — o
+       bastante para elas caírem de sete para cinco por fileira; acima, custam
+       26px cada, vezes onze critérios. Uma fileira de bolhas numerada de 0 a
+       10 e uma caixa de número ao lado dela não precisam de legenda. */
+    .criterion-row:not(.escala-curta) .score-picker-wrap,
+    .criterion-row:not(.escala-curta) .score-input-wrap {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .criterion-row:not(.escala-curta) .score-label-mobile {
+        display: none;
+    }
+
+    .criterion-row.escala-curta {
+        grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 116px;
+    }
+
+    .criterion-row.escala-curta .score-input-wrap {
+        grid-column: 3;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   Celular (até 700px de largura)
+ *
+ * Aqui não sobra largura para nada decorativo. O cabeçalho fica preso no topo,
+ * então cada pixel dele é pixel que o jurado não tem para trabalhar: sai tudo
+ * o que ele não usa ENQUANTO avalia. Nada some do sistema — data, local e nome
+ * completo continuam no menu da conta, a um toque.
+   ------------------------------------------------------------------------- */
+@media (pointer: coarse) and (max-width: 700px) {
+    /* O que ocupa a barra do celular, em ordem de utilidade.
+     *
+     * Numa barra de 358px, tudo não cabe — e a primeira versão desta regra
+     * espremeu o nome do evento até sobrar "FESTIVAL…", que não distingue a
+     * Batalha de Terceirões da Quadrilha Tradicional. Para quem julga três
+     * modalidades no mesmo dia, essa é justamente a informação que a barra
+     * existe para dar.
+     *
+     * Então sai o resto: a data (é hoje), o local (é onde ele está sentado), o
+     * atalho de trocar de modalidade e a seta do menu da conta. Os três
+     * continuam no menu da conta, a um toque. O nome fica com duas linhas e
+     * cabe inteiro. */
+    /* Três linhas, e não duas: o que distingue uma modalidade da outra está no
+       FIM do nome ("… - BATALHA DE TERCEIRÕES"), que é justamente o que o corte
+       come. Com duas linhas o jurado lia "FESTIVAL FOLCLÓRICO 2026…" nas três
+       modalidades do mesmo festival. */
+    .judge-event-head h1 {
+        -webkit-line-clamp: 3;
+        font-size: var(--t-sm);
+    }
+
+    .judge-event-head > div:not(.judge-timer):not(.admin-profile) > p {
+        display: none;
+    }
+
+    .judge-event-head .perfil-gatilho svg {
+        display: none;
+    }
+
+    .judge-event-head .judge-timer {
+        padding: var(--esp-1) var(--esp-2);
+    }
+
+    /* Escala e nota na mesma linha, com a nota numa coluna estreita à direita.
+       Os rótulos saem — a bolha e a caixa de número dizem o que são, e 34px
+       por critério, vezes onze critérios, é uma tela inteira de rolagem.
+
+       Linhas, e não colunas fixas: a escala do Festival de Calouros tem onze
+       bolhas e a da Batalha tem duas. Com `flex`, as bolhas ocupam o que
+       precisam e quebram dentro do próprio espaço, em vez de eu ter de
+       adivinhar uma largura que sirva para as duas. */
+    .criterion-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--esp-2) var(--esp-3);
+    }
+
+    .criterion-row .criterion-name,
+    .criterion-row .criterion-justificativa {
+        flex: 1 1 100%;
+    }
+
+    /* Escala longa (0 a 10): as bolhas tomam a linha inteira e a nota fica
+       embaixo. Espremer onze bolhas em 200px daria quatro fileiras — mais
+       alto do que deixar a nota descer uma linha. */
+    .criterion-row .score-picker-wrap {
+        flex: 1 1 100%;
+        min-width: 0;
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .criterion-row .score-input-wrap {
+        flex: 0 0 104px;
+        grid-template-columns: minmax(0, 1fr);
+        max-width: none;
+    }
+
+    /* Escala curta (9 e 10): sobra largura, e a nota fica ao lado das bolhas
+       que a produziram. */
+    .criterion-row.escala-curta .score-picker-wrap {
+        flex: 0 1 auto;
+    }
+
+    .criterion-row .score-label-mobile {
+        display: none;
+    }
+
+    .criterion-justificativa textarea {
+        min-height: 56px;
+    }
+
+    /* A faixa de navegação em uma linha: as setas de trocar de participante
+       de um lado, Finalizar do outro. */
+    .judge-work-head {
+        flex-wrap: nowrap;
+        padding-block: var(--esp-2);
+    }
+
+    .judge-work-head form {
+        flex: 0 1 auto;
+        min-width: 0;
+    }
+
+    .judge-work-head form .button {
+        width: 100%;
+        padding-inline: var(--esp-3);
+        font-size: var(--t-xs);
+    }
+
+    /* Identificação numa faixa: foto, número da ordem e nome na mesma linha.
+       Antes o nome descia para a linha de baixo e o cartão ia a 166px. */
+    .participant-hero-card {
+        grid-template-columns: auto auto minmax(0, 1fr);
+        align-items: center;
+        row-gap: 0;
+        margin-bottom: var(--esp-3);
+        padding: var(--esp-3);
+    }
+
+    .participant-hero-card > div {
+        grid-column: auto;
+    }
+
+    .participant-photo.large {
+        width: 52px;
+        height: 52px;
+        font-size: 18px;
+    }
+
+    .participant-hero-card h2 {
+        font-size: var(--t-md);
+    }
+
+    .judge-tutorial {
+        margin-bottom: var(--esp-2);
+    }
+}
+
+/* Até 900px o nome do jurado sai do gatilho da conta e ficam só as iniciais.
+   Ele custava 180px de uma barra de 680 — largura que faltava para o nome do
+   EVENTO, que é o que muda de uma modalidade para a outra. O nome completo
+   continua no menu, que é onde se confere de quem é a sessão. */
+@media (pointer: coarse) and (max-width: 900px) {
+    .judge-event-head .perfil-quem {
+        display: none;
+    }
+
+    /* O local do evento é onde o jurado está sentado. Sem ele, a data e o
+       atalho de trocar de modalidade cabem na mesma linha, e o cabeçalho
+       perde uma fileira inteira. */
+    .judge-evento-onde {
+        display: none;
+    }
+}
+
+/* Celular comum: o rótulo "Tempo restante" custa 88px de uma barra que tem
+   358px. O relógio dentro da pílula, contando para trás na frente do jurado,
+   já se explica — e o nome do evento é que precisa daquele espaço. */
+@media (pointer: coarse) and (max-width: 480px) {
+    .judge-event-head .judge-timer span {
+        display: none;
+    }
+}
+
+/* Celular muito estreito: as bolhas encolhem em vez de a linha quebrar mais
+   uma vez. 40px continua sendo alvo de dedo. */
+@media (pointer: coarse) and (max-width: 380px) {
+    .score-picker {
+        gap: 5px;
+    }
+
+    .score-picker label,
+    .score-picker span {
+        min-width: 40px;
+        min-height: 40px;
+    }
+
+    .criterion-row .score-input-wrap {
+        flex-basis: 92px;
+    }
+}
+
+/* Telas baixas (tablet deitado, celular pequeno): o cabeçalho fixo passa a
+   custar mais do que entrega — com 667px de altura, 60px presos no topo são
+   quase um décimo da tela. */
+@media (pointer: coarse) and (max-height: 700px) {
+    .judge-event-head {
+        position: static;
+        box-shadow: none;
+    }
+}
+
 @media print {
     .app-menu-btn,
     .menu-overlay {

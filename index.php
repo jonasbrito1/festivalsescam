@@ -6581,13 +6581,17 @@ function render_judge_panel(): void
             <header class="judge-event-head">
                 <?= menu_botao() ?>
                 <div>
-                    <span>Evento:</span>
+                    <?php /* Cada pedaço tem nome próprio porque no celular o
+                             cabeçalho fica preso no topo, e ali só cabe o que o
+                             jurado precisa enquanto avalia: a modalidade aberta,
+                             o relógio e o atalho para trocar. A data e o local
+                             continuam a um toque, no menu da conta. */ ?>
+                    <span class="judge-evento-rotulo">Evento:</span>
                     <h1><?= h($event['name'] ?? 'Evento') ?></h1>
-                    <p>▣ <?= h($event['date'] ?? '') ?> &nbsp;&nbsp; ◉ Teatro Sesc Centro
-                        <?php /* Atalho no cabeçalho, além do menu: é a troca que
-                                 mais acontece durante o dia do festival. */ ?>
+                    <p>
+                        <span class="judge-evento-quando">▣ <?= h($event['date'] ?? '') ?></span>
+                        <span class="judge-evento-onde">◉ Teatro Sesc Centro</span>
                         <?php if (count($meusEventos) > 1): ?>
-                            &nbsp;&nbsp;
                             <a class="judge-trocar" href="?page=judge-panel&section=eventos">trocar modalidade</a>
                         <?php endif; ?>
                     </p>
@@ -6857,13 +6861,22 @@ function render_judge_panel(): void
                         $notaMin = (float)$regrasEv['nota_minima'];
                         $notaMax = (float)$regrasEv['nota_maxima'];
                         $limiteJust = $regrasEv['justificativa_abaixo_de'];
+
+                        /* Quantas bolhas a escala tem muda o que cabe numa
+                           linha de celular: a Batalha tem duas (9 e 10) e cabe
+                           a nota ao lado; o Festival de Calouros tem onze e
+                           precisa da linha inteira. O CSS não tem como contar
+                           os filhos antes de decidir o layout, então quem conta
+                           é quem já sabe. */
+                        $bolhas = (int)ceil($notaMax) - (int)floor($notaMin) + 1;
+                        $classeEscala = $bolhas <= 4 ? ' escala-curta' : '';
                         ?>
                         <?php foreach ($criteria as $criterion): ?>
                             <?php
                             $current = (string)($scores[(int)$criterion['id']] ?? '');
                             $justAtual = (string)($justificativas[(int)$criterion['id']] ?? '');
                             ?>
-                            <div class="criterion-row">
+                            <div class="criterion-row<?= $classeEscala ?>">
                                 <div class="criterion-name">
                                     <?= card_icone('estrela', 'blue') ?>
                                     <div><strong><?= h($criterion['name']) ?></strong><small><?= h(($criterion['description'] ?? '') !== '' ? $criterion['description'] : 'Avaliação do participante neste critério.') ?></small></div>
