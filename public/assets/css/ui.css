@@ -2276,6 +2276,57 @@ td {
     white-space: nowrap;
 }
 
+/* ---------------------------------------------------------------------------
+   Justificativa por critério (regulamentos que a exigem)
+ *
+ * Ocupa a linha inteira abaixo da nota, e não uma coluna ao lado: quem julga
+ * escreve depois de decidir o número, e num tablet uma caixa de texto espremida
+ * numa quarta coluna seria inutilizável.
+   ------------------------------------------------------------------------- */
+.criterion-justificativa {
+    grid-column: 1 / -1;
+    display: grid;
+    gap: 6px;
+    margin-top: var(--esp-3);
+    padding-top: var(--esp-3);
+    border-top: 1px dashed #dbe1ec;
+}
+
+.criterion-justificativa > span {
+    color: var(--sesc-muted);
+    font-size: var(--t-sm);
+    font-weight: 700;
+}
+
+.criterion-justificativa small {
+    display: block;
+    font-weight: 500;
+    font-size: var(--t-xs);
+}
+
+.criterion-justificativa textarea {
+    width: 100%;
+    min-height: 64px;
+    resize: vertical;
+}
+
+/* Vermelho enquanto falta a justificativa de uma nota que a exige. */
+.criterion-justificativa.exigida > span {
+    color: #b3261e;
+}
+
+.criterion-justificativa.exigida textarea {
+    border-color: #b3261e;
+    background: #fdeceb;
+}
+
+@media (pointer: coarse) {
+    .criterion-justificativa textarea {
+        min-height: 84px;
+        font-size: var(--t-md);
+    }
+}
+
 /* Separador do menu lateral: divide o que vale para o sistema todo do que
    pertence ao evento aberto. */
 .menu-secao {

@@ -124,22 +124,36 @@ function mysql_salvar_votos(int $eventoId, int $juradoId, int $participanteId, a
         $pdo->beginTransaction();
 
         $sql = $pdo->prepare(
-            'INSERT INTO votes (event_id, judge_id, participant_id, criterion_id, score)
-             VALUES (:evento, :jurado, :participante, :criterio, :nota)
-             ON DUPLICATE KEY UPDATE score = VALUES(score), updated_at = CURRENT_TIMESTAMP'
+            'INSERT INTO votes (event_id, judge_id, participant_id, criterion_id, score, justificativa)
+             VALUES (:evento, :jurado, :participante, :criterio, :nota, :justificativa)
+             ON DUPLICATE KEY UPDATE score = VALUES(score),
+                                     justificativa = VALUES(justificativa),
+                                     updated_at = CURRENT_TIMESTAMP'
         );
 
         foreach ($notas as $criterioId => $nota) {
+            /* A nota pode vir sozinha (float) ou acompanhada da justificativa
+               do regulamento (array). Aceitar as duas formas evita mexer em
+               todas as chamadas por causa de um evento que exige o texto. */
+            $texto = '';
+            if (is_array($nota)) {
+                $texto = (string) ($nota['justificativa'] ?? '');
+                $nota = $nota['nota'] ?? null;
+            }
+
             if ($nota === '' || $nota === null) {
                 continue;
             }
 
             $sql->execute([
-                ':evento'       => $eventoId,
-                ':jurado'       => $juradoId,
-                ':participante' => $participanteId,
-                ':criterio'     => (int) $criterioId,
-                ':nota'         => round((float) $nota, 1),
+                ':evento'        => $eventoId,
+                ':jurado'        => $juradoId,
+                ':participante'  => $participanteId,
+                ':criterio'      => (int) $criterioId,
+                /* Duas casas: a Batalha de Terceiroes usa decimos, mas nada
+                   impede um concurso futuro de usar centesimos. */
+                ':nota'          => round((float) $nota, 2),
+                ':justificativa' => $texto === '' ? null : mb_substr($texto, 0, 600),
             ]);
         }
 
@@ -743,6 +757,7 @@ function mysql_ler_banco(): ?array
                 'participant_id' => (int) $r['participant_id'],
                 'criterion_id'   => (int) $r['criterion_id'],
                 'score'          => (float) $r['score'],
+                'justificativa'  => (string) ($r['justificativa'] ?? ''),
                 'created_at'     => mysql_iso($r['created_at']),
                 'updated_at'     => mysql_iso($r['updated_at']),
             ];

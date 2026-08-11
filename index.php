@@ -20,6 +20,11 @@ require_once __DIR__ . '/lib/pdf.php';
  * proprio, sem ligacao com eventos/jurados — ver lib/planilha.php. */
 require_once __DIR__ . '/lib/planilha.php';
 
+/* Regras de avaliacao de cada evento: faixa de nota, justificativa
+ * obrigatoria e penalidades. Evento sem regra propria segue o padrao de
+ * sempre — ver lib/regras.php. */
+require_once __DIR__ . '/lib/regras.php';
+
 /* ---------------------------------------------------------------------------
  * [SEGURANCA] Onde ficam os arquivos de sessao.
  *
@@ -1527,8 +1532,18 @@ function modulos_do_evento(?int $eventId): array
 {
     $modulos = [];
 
-    if ($eventId !== null && function_exists('ser_evento_participa') && ser_evento_participa($eventId)) {
+    if ($eventId === null) {
+        return $modulos;
+    }
+
+    if (function_exists('ser_evento_participa') && ser_evento_participa($eventId)) {
         $modulos[] = ['chave' => 'planilha', 'icone' => 'planilha', 'titulo' => 'Planilha SER SESC'];
+    }
+
+    /* Penalidades só existem onde o regulamento as prevê. Num festival de
+       calouros a entrada nem aparece. */
+    if (function_exists('penalidades_do_evento') && penalidades_do_evento($eventId) !== []) {
+        $modulos[] = ['chave' => 'penalidades', 'icone' => 'criterio', 'titulo' => 'Penalidades'];
     }
 
     return $modulos;
@@ -1548,6 +1563,10 @@ function ranking_for_event(array $db, int $eventId): array
     foreach ($criteria as $criterion) {
         $criteriaById[(int)$criterion['id']] = max((float)$criterion['weight'], 0.1);
     }
+
+    /* Uma consulta só para todo o evento; dentro do laço seriam N idas ao
+       banco numa tela que recarrega a cada 20 segundos. */
+    $penalidades = function_exists('penalidades_aplicadas') ? penalidades_aplicadas($eventId) : [];
 
     $ranking = [];
     foreach ($participants as $participant) {
@@ -1590,10 +1609,20 @@ function ranking_for_event(array $db, int $eventId): array
             }
         }
 
+        // Média ponderada por jurado, promediada entre os jurados.
+        $media = $judgeCount > 0 ? $total / $judgeCount : 0;
+
+        /* Penalidades do regulamento — 0,5 por conduta, 1,0 por figurino etc.
+         * Descontam da NOTA GERAL, que é a média: é o número na escala do
+         * concurso. Descontar da soma bruta faria 0,5 valer um vigésimo do que
+         * deveria num evento com quatro jurados e cinco critérios. */
+        $desconto = (float)($penalidades[(int)$participant['id']]['total'] ?? 0);
+
         $ranking[] = [
             'participant' => $participant,
-            // Média ponderada por jurado, promediada entre os jurados.
-            'score' => $judgeCount > 0 ? $total / $judgeCount : 0,
+            'score' => max(0, $media - $desconto),
+            'score_bruto' => $media,
+            'penalidade' => $desconto,
             'total_points' => $pontosTotais,
             'judge_count' => $judgeCount,
             'vote_count' => $notasLancadas,
@@ -2992,6 +3021,7 @@ function handle_post(): void
         $criteria = items_for_event($db['criteria'] ?? [], $eventId);
         $criteriaIds = array_map(fn($criterion) => (int)$criterion['id'], $criteria);
         $validScores = [];
+        $validJustificativas = [];
         $missingCriteriaIds = [];
         $invalidCriteriaIds = [];
         $redirectUrl = '?page=judge-panel&participant_id=' . $participantId . '&section=votacao';
@@ -3031,6 +3061,14 @@ function handle_post(): void
             redirect_to('judge-panel', ['section' => 'criterios']);
         }
 
+        /* Regras deste evento: faixa da nota e quando a justificativa é
+           obrigatória. Evento sem regra própria segue 0 a 10, sem exigência —
+           ver lib/regras.php. */
+        $regras = regras_do_evento($eventId);
+        $justificativas = $_POST['justificativas'] ?? [];
+        $foraDaFaixa = [];
+        $semJustificativa = [];
+
         foreach ($rawScores as $criterionId => $score) {
             $criterionId = (int)$criterionId;
             if (!in_array($criterionId, $criteriaIds, true)) {
@@ -3041,7 +3079,39 @@ function handle_post(): void
             if ($normalizedScore === '') {
                 continue;
             }
-            $validScores[$criterionId] = min(max((float)str_replace(',', '.', $normalizedScore), 0), 10);
+
+            $nota = (float)str_replace(',', '.', $normalizedScore);
+
+            /* Recusa em vez de aparar. Cortar 8,5 para 9,0 num concurso cuja
+               nota mínima é 9,0 seria inventar uma nota que o jurado não deu. */
+            if (!nota_valida($nota, $regras)) {
+                $foraDaFaixa[] = $criterionId;
+                continue;
+            }
+
+            $texto = trim((string)($justificativas[$criterionId] ?? ''));
+
+            if (exige_justificativa($nota, $regras) && $texto === '') {
+                $semJustificativa[] = $criterionId;
+                continue;
+            }
+
+            $validScores[$criterionId] = $nota;
+            $validJustificativas[$criterionId] = $texto;
+        }
+
+        if ($foraDaFaixa || $semJustificativa) {
+            $message = $foraDaFaixa
+                ? 'A nota precisa estar entre ' . regras_texto_faixa($regras) . '.'
+                : 'Justifique as notas abaixo de ' . numero_pt((float)$regras['justificativa_abaixo_de'])
+                  . ' — o regulamento exige.';
+
+            if (is_json_request()) {
+                json_response(['ok' => false, 'message' => $message], 422);
+            }
+
+            flash($message, 'error');
+            redirect_to('judge-panel', ['participant_id' => $participantId, 'section' => 'votacao']);
         }
 
         foreach ($criteriaIds as $criterionId) {
@@ -3081,6 +3151,7 @@ function handle_post(): void
                 'participant_id' => $participantId,
                 'criterion_id' => (int)$criterionId,
                 'score' => $score,
+                'justificativa' => (string)($validJustificativas[$criterionId] ?? ''),
                 'created_at' => date('c'),
             ];
         }
@@ -3131,7 +3202,18 @@ function handle_post(): void
          * schema — ao contrario do snapshot, que apagava tudo e reinseria,
          * fazendo o ultimo a salvar sobrescrever as notas dos demais. */
         if (mysql_ativo()) {
-            $gravou = mysql_salvar_votos($eventId, $judgeId, $participantId, $validScores);
+            /* Nota e justificativa viajam juntas: sao a mesma linha da ficha,
+               e gravar uma sem a outra deixaria a justificativa orfa se a
+               segunda escrita falhasse. */
+            $paraGravar = [];
+            foreach ($validScores as $criterionId => $score) {
+                $paraGravar[$criterionId] = [
+                    'nota'          => $score,
+                    'justificativa' => (string)($validJustificativas[$criterionId] ?? ''),
+                ];
+            }
+
+            $gravou = mysql_salvar_votos($eventId, $judgeId, $participantId, $paraGravar);
             mysql_salvar_observacao($eventId, $judgeId, $participantId, $observationText);
             mysql_salvar_ficha(
                 $eventId,
@@ -3211,12 +3293,115 @@ function handle_post(): void
         redirect_query($redirectUrl);
     }
 
+    /* Penalidades do regulamento, aplicadas pela organização — nunca pelo
+     * jurado. O jurado dá nota; quem desconta ponto por conduta, figurino ou
+     * acrobacia é a coordenação, e fica registrado quem aplicou. */
+    if ($action === 'aplicar_penalidade') {
+        require_admin();
+
+        $eventId = (int)($_POST['event_id'] ?? 0);
+        $resultado = penalidade_aplicar(
+            $eventId,
+            (int)($_POST['participant_id'] ?? 0),
+            (int)($_POST['penalidade_id'] ?? 0),
+            clean($_POST['motivo'] ?? ''),
+            (string)($_SESSION['admin_name'] ?? '')
+        );
+
+        flash($resultado['mensagem'], $resultado['ok'] ? 'success' : 'error');
+        redirect_to('dashboard', ['event_id' => $eventId, 'section' => 'penalidades']);
+    }
+
+    if ($action === 'remover_penalidade') {
+        require_admin();
+
+        $eventId = (int)($_POST['event_id'] ?? 0);
+        $resultado = penalidade_remover((int)($_POST['id'] ?? 0), $eventId);
+
+        flash($resultado['mensagem'], $resultado['ok'] ? 'success' : 'error');
+        redirect_to('dashboard', ['event_id' => $eventId, 'section' => 'penalidades']);
+    }
+
     if ($action === 'finalize_evaluation') {
         require_judge();
         $eventId = (int)$_SESSION['judge_event_id'];
+        $judgeId = (int)$_SESSION['judge_id'];
+
+        /* Regra 6.6 do regulamento da Batalha de Terceirões: "Caso o avaliador
+         * esqueça de lançar alguma nota, em qualquer um dos critérios, será
+         * considerada automaticamente a nota 10."
+         *
+         * Aplicada aqui, e não ao gravar cada participante: é ao finalizar que
+         * a ficha é considerada entregue. Antes disso o jurado ainda pode
+         * voltar e preencher, e completar sozinho seria pôr nota no lugar dele.
+         *
+         * Eventos sem esta regra não têm nota_ao_finalizar e passam batido. */
+        $regras = regras_do_evento($eventId);
+        $completadas = 0;
+
+        if ($regras['nota_ao_finalizar'] !== null) {
+            $nota = (float)$regras['nota_ao_finalizar'];
+            $criterios = items_for_event($db['criteria'] ?? [], $eventId);
+            $participantes = items_for_event($db['participants'] ?? [], $eventId);
+
+            $lancadas = [];
+            foreach ($db['votes'] ?? [] as $voto) {
+                if ((int)$voto['event_id'] === $eventId && (int)$voto['judge_id'] === $judgeId) {
+                    $lancadas[(int)$voto['participant_id']][(int)$voto['criterion_id']] = true;
+                }
+            }
+
+            foreach ($participantes as $p) {
+                foreach ($criterios as $c) {
+                    if (isset($lancadas[(int)$p['id']][(int)$c['id']])) {
+                        continue;
+                    }
+
+                    $db['votes'][] = [
+                        'id' => next_id($db, 'votes'),
+                        'event_id' => $eventId,
+                        'judge_id' => $judgeId,
+                        'participant_id' => (int)$p['id'],
+                        'criterion_id' => (int)$c['id'],
+                        'score' => $nota,
+                        'justificativa' => 'Nota atribuída automaticamente ao finalizar, '
+                            . 'conforme o regulamento (item 6.6).',
+                        'created_at' => date('c'),
+                    ];
+                    $completadas++;
+                }
+            }
+
+            if ($completadas > 0) {
+                db_write($db);
+
+                if (mysql_ativo()) {
+                    foreach ($participantes as $p) {
+                        $faltantes = [];
+                        foreach ($criterios as $c) {
+                            if (!isset($lancadas[(int)$p['id']][(int)$c['id']])) {
+                                $faltantes[(int)$c['id']] = [
+                                    'nota' => $nota,
+                                    'justificativa' => 'Nota atribuída automaticamente ao finalizar, '
+                                        . 'conforme o regulamento (item 6.6).',
+                                ];
+                            }
+                        }
+                        if ($faltantes) {
+                            mysql_salvar_votos($eventId, $judgeId, (int)$p['id'], $faltantes);
+                        }
+                    }
+                }
+            }
+        }
+
         $_SESSION['judge_finished'][$eventId] = true;
         $_SESSION['judge_deadlines'][$eventId] = time();
-        flash('Avaliações finalizadas.');
+
+        flash($completadas > 0
+            ? 'Avaliações finalizadas. ' . $completadas . ' nota(s) em branco receberam '
+              . numero_pt((float)$regras['nota_ao_finalizar']) . ', conforme o regulamento.'
+            : 'Avaliações finalizadas.');
         redirect_to('judge-panel', ['section' => 'resumo']);
     }
 
@@ -3653,6 +3838,145 @@ function render_footer(): void
 /* ===========================================================================
  * Telas de gestão de usuários e integração
  * ======================================================================== */
+
+/**
+ * Penalidades previstas no regulamento, aplicadas pela organização.
+ *
+ * Fica fora do painel do jurado de propósito: o jurado dá nota; quem desconta
+ * ponto por conduta, figurino ou movimento proibido é a coordenação, e o
+ * regulamento atribui isso a um técnico da organização, não à banca.
+ */
+function render_secao_penalidades(array $db, int $eventId, array $participants, array $ranking): void
+{
+    $catalogo = penalidades_do_evento($eventId);
+    $aplicadas = penalidades_aplicadas($eventId);
+    ?>
+    <section class="management-page">
+        <div class="management-head">
+            <h2>Penalidades</h2>
+        </div>
+
+        <?php if (!$catalogo): ?>
+            <div class="panel">
+                <div class="info-note">
+                    Este evento não tem penalidades previstas. Elas fazem parte do regulamento
+                    de cada concurso e são cadastradas junto com ele.
+                </div>
+            </div>
+            <?php return; ?>
+        <?php endif; ?>
+
+        <div class="panel">
+            <div class="info-note">
+                <strong>O desconto sai da nota final.</strong>
+                A pontuação de cada equipe é a média dos jurados; a penalidade é subtraída
+                dela. Fica registrado quem aplicou e quando — é um desconto numa competição,
+                e tem de haver a quem perguntar depois.
+            </div>
+        </div>
+
+        <div class="panel data-panel">
+            <div class="management-head compact"><h2>Aplicar penalidade</h2></div>
+            <form method="post" class="ser-form-turma">
+                <input type="hidden" name="action" value="aplicar_penalidade">
+                <input type="hidden" name="event_id" value="<?= (int)$eventId ?>">
+                <label>Equipe
+                    <select name="participant_id" required>
+                        <?php foreach ($participants as $p): ?>
+                            <option value="<?= (int)$p['id'] ?>"><?= h($p['name']) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </label>
+                <label>Penalidade
+                    <select name="penalidade_id" required>
+                        <?php foreach ($catalogo as $c): ?>
+                            <option value="<?= (int)$c['id'] ?>">
+                                <?= h($c['nome']) ?> (−<?= h(numero_pt((float)$c['valor'])) ?>)
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </label>
+                <label>Motivo
+                    <input name="motivo" maxlength="400" placeholder="O que aconteceu">
+                </label>
+                <button class="button primary" type="submit">Aplicar</button>
+            </form>
+            <p class="dica">
+                Previstas neste evento:
+                <?php foreach ($catalogo as $i => $c): ?>
+                    <?= $i ? ' · ' : '' ?><strong><?= h($c['nome']) ?></strong> −<?= h(numero_pt((float)$c['valor'])) ?>
+                <?php endforeach; ?>
+            </p>
+        </div>
+
+        <div class="panel data-panel">
+            <div class="management-head compact"><h2>Aplicadas</h2></div>
+            <div class="table-wrap">
+                <table class="admin-table responsive-cards">
+                    <thead>
+                        <tr><th>Equipe</th><th>Penalidade</th><th>Valor</th><th>Motivo</th><th>Quem aplicou</th><th>Ações</th></tr>
+                    </thead>
+                    <tbody>
+                    <?php $houve = false; ?>
+                    <?php foreach ($participants as $p): ?>
+                        <?php foreach ($aplicadas[(int)$p['id']]['itens'] ?? [] as $a): $houve = true; ?>
+                            <tr>
+                                <td data-label="Equipe"><strong><?= h($p['name']) ?></strong></td>
+                                <td data-label="Penalidade"><?= h($a['nome']) ?></td>
+                                <td data-label="Valor">−<?= h(numero_pt((float)$a['valor'])) ?></td>
+                                <td data-label="Motivo"><?= h($a['motivo'] ?: '—') ?></td>
+                                <td data-label="Quem aplicou">
+                                    <?= h($a['aplicada_por'] ?: '—') ?>
+                                    <small><?= h(date('d/m H:i', strtotime((string)$a['aplicada_em']))) ?></small>
+                                </td>
+                                <td data-label="Ações" class="table-actions">
+                                    <form method="post" class="em-linha"
+                                          onsubmit="return confirm('Remover esta penalidade? A nota da equipe volta a subir.');">
+                                        <input type="hidden" name="action" value="remover_penalidade">
+                                        <input type="hidden" name="event_id" value="<?= (int)$eventId ?>">
+                                        <input type="hidden" name="id" value="<?= (int)$a['id'] ?>">
+                                        <button class="button small" type="submit">Remover</button>
+                                    </form>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    <?php endforeach; ?>
+                    <?php if (!$houve): ?>
+                        <tr><td colspan="6">Nenhuma penalidade aplicada.</td></tr>
+                    <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="panel data-panel">
+            <div class="management-head compact"><h2>Pontuação com o desconto</h2></div>
+            <div class="table-wrap">
+                <table class="admin-table responsive-cards">
+                    <thead>
+                        <tr><th>#</th><th>Equipe</th><th>Média dos jurados</th><th>Penalidades</th><th>Nota final</th></tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($ranking as $i => $linha): ?>
+                        <tr class="<?= $i === 0 ? 'ser-campeao' : '' ?>">
+                            <td data-label="#"><?= $i + 1 ?>º</td>
+                            <td data-label="Equipe"><strong><?= h($linha['participant']['name']) ?></strong></td>
+                            <td data-label="Média dos jurados"><?= h(number_format((float)($linha['score_bruto'] ?? $linha['score']), 2, ',', '.')) ?></td>
+                            <td data-label="Penalidades">
+                                <?= ($linha['penalidade'] ?? 0) > 0
+                                    ? '−' . h(numero_pt((float)$linha['penalidade']))
+                                    : '—' ?>
+                            </td>
+                            <td data-label="Nota final" class="ser-total"><?= h(number_format((float)$linha['score'], 2, ',', '.')) ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+    <?php
+}
 
 /**
  * Todos os jurados do sistema, agrupados por evento.
@@ -4909,6 +5233,10 @@ function render_dashboard(): void
         <?php render_secao_planilha(); ?>
     <?php endif; ?>
 
+    <?php if ($section === 'penalidades' && $event): ?>
+        <?php render_secao_penalidades($db, $eventId, $participants, $ranking); ?>
+    <?php endif; ?>
+
     <?php if ($section === 'painel'): ?>
         <?php /* Sem atualizacao automatica aqui de proposito.
                  O Painel principal e tela de TRABALHO: tem formularios e
@@ -6092,9 +6420,11 @@ function render_judge_panel(): void
     $prev = $selectedIndex > 0 ? ($participants[$selectedIndex - 1] ?? null) : null;
     $next = $selectedIndex < (count($participants) - 1) ? ($participants[$selectedIndex + 1] ?? null) : null;
     $scores = [];
+    $justificativas = [];
     foreach ($db['votes'] ?? [] as $vote) {
         if ((int)$vote['event_id'] === $eventId && (int)$vote['judge_id'] === $judgeId && (int)$vote['participant_id'] === $participantId) {
             $scores[(int)$vote['criterion_id']] = (float)$vote['score'];
+            $justificativas[(int)$vote['criterion_id']] = (string)($vote['justificativa'] ?? '');
         }
     }
     $observation = observation_for($db, $eventId, $judgeId, $participantId);
@@ -6423,8 +6753,19 @@ function render_judge_panel(): void
                         <input type="hidden" name="signature_touch" value="<?= h($selectedSignature['touch']) ?>" data-signature-output>
                         <div class="offline-status" data-offline-status hidden></div>
                         <div class="criteria-head"><strong>Critérios de Avaliação</strong><strong>Escala</strong><strong>Nota</strong></div>
+                        <?php
+                        /* Faixa de nota do evento. A Batalha de Terceirões usa
+                           9,0 a 10,0; os demais seguem 0 a 10. */
+                        $regrasEv = regras_do_evento($eventId);
+                        $notaMin = (float)$regrasEv['nota_minima'];
+                        $notaMax = (float)$regrasEv['nota_maxima'];
+                        $limiteJust = $regrasEv['justificativa_abaixo_de'];
+                        ?>
                         <?php foreach ($criteria as $criterion): ?>
-                            <?php $current = (string)($scores[(int)$criterion['id']] ?? ''); ?>
+                            <?php
+                            $current = (string)($scores[(int)$criterion['id']] ?? '');
+                            $justAtual = (string)($justificativas[(int)$criterion['id']] ?? '');
+                            ?>
                             <div class="criterion-row">
                                 <div class="criterion-name">
                                     <?= card_icone('estrela', 'blue') ?>
@@ -6433,10 +6774,10 @@ function render_judge_panel(): void
                                 <div class="score-picker-wrap">
                                     <span class="score-label-mobile">Escala</span>
                                     <div class="score-picker">
-                                        <?php for ($score = 0; $score <= 10; $score++): ?>
+                                        <?php for ($score = (int)floor($notaMin); $score <= (int)ceil($notaMax); $score++): ?>
                                             <?php
                                                 $currentFloat = $current !== '' ? (float)$current : null;
-                                                $scoreSelected = $currentFloat !== null && (($score === 10 && $currentFloat === 10.0) || ($score < 10 && floor($currentFloat) === $score));
+                                                $scoreSelected = $currentFloat !== null && (($score >= $notaMax && $currentFloat >= $notaMax) || ($score < $notaMax && floor($currentFloat) === (float)$score));
                                             ?>
                                             <label class="<?= $scoreSelected ? 'checked' : '' ?>">
                                                 <input type="radio" name="score_buttons[<?= (int)$criterion['id'] ?>]" value="<?= $score ?>" <?= $scoreSelected ? 'checked' : '' ?> <?= $isFinished ? 'disabled' : '' ?>>
@@ -6444,12 +6785,32 @@ function render_judge_panel(): void
                                             </label>
                                         <?php endfor; ?>
                                     </div>
-                                    <div class="decimal-picker" data-decimal-picker <?= $current === '' || ((float)$current === 10.0) ? 'hidden' : '' ?>></div>
+                                    <div class="decimal-picker" data-decimal-picker <?= $current === '' || ((float)$current >= $notaMax) ? 'hidden' : '' ?>></div>
                                 </div>
                                 <label class="score-input-wrap">
                                     <span class="score-label-mobile">Nota</span>
-                                    <input class="score-box" required name="scores[<?= (int)$criterion['id'] ?>]" type="number" min="0" max="10" step="0.1" inputmode="decimal" value="<?= $current !== '' ? h((string)(float)$current) : '' ?>" placeholder="-" <?= $isFinished ? 'disabled' : '' ?>>
+                                    <input class="score-box" required name="scores[<?= (int)$criterion['id'] ?>]"
+                                           type="number" min="<?= h((string)$notaMin) ?>" max="<?= h((string)$notaMax) ?>"
+                                           step="<?= h((string)$regrasEv['passo']) ?>" inputmode="decimal"
+                                           value="<?= $current !== '' ? h((string)(float)$current) : '' ?>"
+                                           placeholder="-" <?= $isFinished ? 'disabled' : '' ?>>
                                 </label>
+
+                                <?php /* Justificativa por critério — item 6.5 do regulamento.
+                                         Aparece só nos eventos que a exigem, e o próprio
+                                         campo diz a partir de que nota ela é obrigatória. */ ?>
+                                <?php if ($limiteJust !== null): ?>
+                                    <label class="criterion-justificativa"
+                                           data-justificativa="<?= (int)$criterion['id'] ?>"
+                                           data-limite="<?= h((string)$limiteJust) ?>">
+                                        <span>Justificativa
+                                            <small>obrigatória para nota abaixo de <?= h(numero_pt((float)$limiteJust)) ?></small>
+                                        </span>
+                                        <textarea name="justificativas[<?= (int)$criterion['id'] ?>]" rows="2"
+                                                  placeholder="Explique a nota deste critério"
+                                                  <?= $isFinished ? 'disabled' : '' ?>><?= h($justAtual) ?></textarea>
+                                    </label>
+                                <?php endif; ?>
                             </div>
                         <?php endforeach; ?>
                         <label class="observations">Observações (opcional)<textarea name="observation" rows="3" placeholder="Descreva aqui seus comentários sobre a apresentação do participante..." <?= $isFinished ? 'disabled' : '' ?>><?= h($observation['text'] ?? '') ?></textarea></label>

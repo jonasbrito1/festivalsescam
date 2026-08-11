@@ -203,6 +203,51 @@
 
 
 /* ============================================================================
+   Justificativa obrigatoria abaixo de uma nota.
+
+   Marca o campo em vermelho assim que a nota entra na faixa que exige
+   justificativa, em vez de deixar o jurado descobrir na hora de salvar --
+   quando ja rolou a tela e nao sabe qual criterio faltou.
+
+   O servidor recusa de qualquer jeito; isto e so para avisar antes.
+   ========================================================================= */
+(function () {
+    'use strict';
+
+    var campos = document.querySelectorAll('[data-justificativa]');
+    if (!campos.length) {
+        return;
+    }
+
+    campos.forEach(function (bloco) {
+        var id = bloco.dataset.justificativa;
+        var limite = parseFloat(bloco.dataset.limite);
+        var nota = document.querySelector('input[name="scores[' + id + ']"]');
+        var texto = bloco.querySelector('textarea');
+
+        if (!nota || !texto) {
+            return;
+        }
+
+        function conferir() {
+            var n = parseFloat(String(nota.value).replace(',', '.'));
+            var precisa = !isNaN(n) && n < limite - 0.001;
+
+            bloco.classList.toggle('exigida', precisa && texto.value.trim() === '');
+            /* required de verdade: o proprio navegador barra o envio e leva o
+               foco ate o campo que falta. */
+            texto.required = precisa;
+        }
+
+        nota.addEventListener('input', conferir);
+        nota.addEventListener('change', conferir);
+        texto.addEventListener('input', conferir);
+        conferir();
+    });
+})();
+
+
+/* ============================================================================
    Planilha SER SESC.
 
    Duas coisas acontecem aqui:
