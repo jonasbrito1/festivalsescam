@@ -3183,6 +3183,74 @@ td {
     }
 }
 
+/* ---------------------------------------------------------------------------
+   15. Resultado final no acompanhamento
+ *
+ * A coordenação deixa esta tela aberta durante o festival. O quadro precisa
+ * responder, de longe, a três perguntas: quantos jurados faltam, para quem vai
+ * o resultado, e se já saiu.
+   ------------------------------------------------------------------------- */
+.resultado-final {
+    display: grid;
+    gap: var(--esp-2);
+    margin: var(--esp-4) 0;
+    padding: var(--esp-4);
+    border: 1px solid var(--line, #dde3ec);
+    border-left: 4px solid #c9d2e0;
+    border-radius: var(--ui-raio-g);
+    background: #fff;
+}
+
+/* Verde só quando todos entregaram: é o estado que muda o que a coordenação
+   faz em seguida. */
+.resultado-final.pronto {
+    border-left-color: #1f7a34;
+    background: #f6fbf7;
+}
+
+.resultado-cabeca {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--esp-3);
+}
+
+.resultado-cabeca strong {
+    display: block;
+    color: var(--sesc-blue, #002f8f);
+    font-size: var(--t-md);
+}
+
+.resultado-cabeca span {
+    color: var(--sesc-muted, #5b6779);
+    font-size: var(--t-sm);
+}
+
+.resultado-destinos {
+    margin: 0;
+    color: var(--sesc-muted, #5b6779);
+    font-size: var(--t-sm);
+}
+
+.resultado-destinos strong {
+    color: var(--sesc-blue, #002f8f);
+    font-variant-numeric: tabular-nums;
+}
+
+.resultado-acoes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--esp-2);
+}
+
+@media (pointer: coarse) {
+    .resultado-acoes .button {
+        flex: 1 1 200px;
+        min-height: 48px;
+    }
+}
+
 @media print {
     .app-menu-btn,
     .menu-overlay {

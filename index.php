@@ -31,6 +31,10 @@ require_once __DIR__ . '/lib/planilha.php';
  * sempre — ver lib/regras.php. */
 require_once __DIR__ . '/lib/regras.php';
 
+/* Resultado final por WhatsApp quando o ultimo jurado finaliza — ver
+ * lib/resultado.php. */
+require_once __DIR__ . '/lib/resultado.php';
+
 /* ---------------------------------------------------------------------------
  * [SEGURANCA] Onde ficam os arquivos de sessao.
  *
@@ -2994,10 +2998,44 @@ function handle_post(): void
             'wa_endpoint'        => clean($_POST['wa_endpoint'] ?? ''),
             'wa_notificar_voto'  => isset($_POST['wa_notificar_voto']) ? '1' : '0',
             'wa_ddi_padrao'      => preg_replace('/\D+/', '', (string)($_POST['wa_ddi_padrao'] ?? '55')) ?: '55',
+            'wa_resultado_ativo' => isset($_POST['wa_resultado_ativo']) ? '1' : '0',
+            'wa_resultado_para'  => clean($_POST['wa_resultado_para'] ?? ''),
         ]);
 
         flash($ok ? 'Configuração do WhatsApp salva.' : 'Não foi possível salvar a configuração.', $ok ? 'success' : 'error');
         redirect_to('dashboard', ['section' => 'whatsapp', 'event_id' => active_event_id($db)]);
+    }
+
+    /* Envio do resultado final pedido pela organização.
+     *
+     * O automático sai sozinho quando o último jurado finaliza. Este botão
+     * existe para o dia em que a API do WhatsApp estiver fora naquele minuto:
+     * resolvido o problema, a coordenação manda de novo sem depender de um
+     * jurado reabrir e refinalizar a ficha. */
+    if ($action === 'enviar_resultado') {
+        require_admin();
+        $eventId = (int)($_POST['event_id'] ?? 0);
+        $evento = find_by_id($db['events'] ?? [], $eventId);
+
+        if (!$evento) {
+            flash('Evento não encontrado.', 'error');
+            redirect_to('acompanhamento');
+        }
+
+        $andamento = resultado_andamento($db, $eventId);
+
+        /* Nem todos finalizaram: mandar agora seria anunciar como final um
+           resultado que ainda vai mudar. */
+        if (!$andamento['completo']) {
+            flash($andamento['total'] === 0
+                ? 'Este evento não tem jurados cadastrados.'
+                : 'Ainda falta finalizar: ' . implode(', ', $andamento['faltam']) . '.', 'error');
+            redirect_to('acompanhamento', ['event_id' => $eventId]);
+        }
+
+        $r = resultado_enviar($db, $eventId, 'manual', true);
+        flash($r['mensagem'], $r['ok'] ? 'success' : 'error');
+        redirect_to('acompanhamento', ['event_id' => $eventId]);
     }
 
     if ($action === 'testar_whatsapp') {
@@ -3117,7 +3155,13 @@ function handle_post(): void
             $redirectUrl = $nextUrl;
         }
 
-        if (!empty($_SESSION['judge_finished'][$eventId]) || time() >= (int)($_SESSION['judge_deadlines'][$eventId] ?? PHP_INT_MAX)) {
+        /* Finalizou é finalizou, mesmo que ele tenha saído e entrado de novo:
+           a marca está no banco, não só na sessão. Sem isso, sair e voltar
+           reabria a ficha de quem já tinha entregado — e reabriria depois de o
+           resultado já ter sido enviado. */
+        if (!empty($_SESSION['judge_finished'][$eventId])
+            || resultado_jurado_finalizou($eventId, $judgeId)
+            || time() >= (int)($_SESSION['judge_deadlines'][$eventId] ?? PHP_INT_MAX)) {
             if (is_json_request()) {
                 json_response(['ok' => false, 'message' => 'O tempo de avaliação foi encerrado.', 'redirect' => '?page=judge-panel&section=resumo'], 409);
             }
@@ -3495,11 +3539,45 @@ function handle_post(): void
         $_SESSION['judge_finished'][$eventId] = true;
         $_SESSION['judge_deadlines'][$eventId] = time();
 
+        /* A sessão sozinha não bastava: o jurado saía do sistema e voltava a
+           aparecer como se não tivesse terminado. Agora a finalização fica no
+           banco — é ela que diz quando o ÚLTIMO jurado do evento acabou. */
+        resultado_marcar_finalizado($eventId, $judgeId);
+        cache_esquecer('resultado');
+
         flash($completadas > 0
             ? 'Avaliações finalizadas. ' . $completadas . ' nota(s) em branco receberam '
               . numero_pt((float)$regras['nota_ao_finalizar']) . ', conforme o regulamento.'
             : 'Avaliações finalizadas.');
-        redirect_to('judge-panel', ['section' => 'resumo']);
+
+        /* Se este foi o último jurado, o resultado sai para a coordenação —
+         * DEPOIS de a página do jurado ir embora.
+         *
+         * Cada envio pode levar até 20 segundos, e são dois números: pendurar
+         * isso no clique de "Finalizar" deixaria o jurado olhando uma tela
+         * parada por quase um minuto, achando que travou — e clicando de novo.
+         * A resposta é fechada aqui; a conversa com a Meta acontece com o
+         * navegador dele já liberado.
+         *
+         * Silencioso de propósito: um erro de WhatsApp da coordenação não pode
+         * virar mensagem de erro para quem acabou de entregar a ficha. */
+        $destino = '?' . http_build_query(['page' => 'judge-panel', 'section' => 'resumo']);
+        header('Location: ' . $destino);
+
+        if (function_exists('fastcgi_finish_request')) {
+            session_write_close();   // grava o flash antes de soltar a resposta
+
+            /* O buffer do CSRF está aberto desde o início da requisição. Sem
+               esvaziá-lo, a resposta não chega inteira ao navegador. */
+            while (ob_get_level() > 0) {
+                ob_end_flush();
+            }
+
+            fastcgi_finish_request();
+        }
+
+        resultado_talvez_enviar(db_read(), $eventId);
+        exit;
     }
 
     /* -----------------------------------------------------------------------
@@ -4405,6 +4483,19 @@ function render_secao_whatsapp(array $db, int $eventId): void
                         <input type="checkbox" name="wa_notificar_voto" value="1" <?= ($c['wa_notificar_voto'] ?? '1') === '1' ? 'checked' : '' ?>>
                         Avisar o jurado a cada participante avaliado
                     </label>
+
+                    <label class="caixa">
+                        <input type="checkbox" name="wa_resultado_ativo" value="1" <?= ($c['wa_resultado_ativo'] ?? '1') === '1' ? 'checked' : '' ?>>
+                        Enviar o resultado final quando o último jurado finalizar
+                    </label>
+
+                    <label>Resultado final para
+                        <input name="wa_resultado_para" value="<?= h($c['wa_resultado_para'] ?? '') ?>"
+                               placeholder="(92) 99344-9287, (92) 98847-0635">
+                    </label>
+                    <p class="dica">Quem recebe a classificação assim que todos os jurados
+                        entregarem a ficha. Vários números separados por vírgula. Em branco,
+                        nada é enviado.</p>
 
                     <div class="form-actions">
                         <button class="button primary" type="submit">Salvar configuração</button>
@@ -6533,7 +6624,9 @@ function render_judge_panel(): void
     $_SESSION['judge_deadlines'][$eventId] = $deadline;
     $remaining = max(0, $deadline - time());
     $timerText = gmdate('H:i:s', $remaining);
-    $isFinished = !empty($_SESSION['judge_finished'][$eventId]) || $remaining <= 0;
+    $isFinished = !empty($_SESSION['judge_finished'][$eventId])
+        || resultado_jurado_finalizou($eventId, $judgeId)
+        || $remaining <= 0;
     $periodIsActive = active_evaluation_period($event);
 
     render_header('Painel do Jurado');
@@ -7152,6 +7245,74 @@ function render_ranking_page(): void
     render_footer();
 }
 
+/**
+ * O quadro do resultado final, no acompanhamento.
+ *
+ * Mostra quem já entregou a ficha, quem falta, e o que aconteceu com o envio.
+ * É a tela que a coordenação deixa aberta durante o festival — se o WhatsApp
+ * falhar, é aqui que ela precisa descobrir, e não pelo telefone que não tocou.
+ */
+function render_resultado_final(array $db, int $eventId): string
+{
+    $andamento = resultado_andamento($db, $eventId);
+    $enviado = resultado_ja_enviado($eventId);
+    $destinos = resultado_destinatarios();
+    $ligado = wa_get('wa_resultado_ativo', '1') === '1';
+
+    ob_start();
+    ?>
+    <section class="resultado-final <?= $andamento['completo'] ? 'pronto' : '' ?>">
+        <div class="resultado-cabeca">
+            <div>
+                <strong>Resultado final por WhatsApp</strong>
+                <span>
+                    <?= (int)$andamento['finalizados'] ?> de <?= (int)$andamento['total'] ?> jurado(s) finalizaram
+                    <?php if ($andamento['faltam'] !== []): ?>
+                        — falta <?= h(implode(', ', $andamento['faltam'])) ?>
+                    <?php endif; ?>
+                </span>
+            </div>
+
+            <?php if ($enviado): ?>
+                <span class="status-pill enviado">Enviado em <?= h(date('d/m/Y H:i', strtotime((string)$enviado['enviado_em']))) ?></span>
+            <?php elseif (!$ligado): ?>
+                <span class="status-pill pendente">Envio automático desligado</span>
+            <?php elseif ($andamento['completo']): ?>
+                <span class="status-pill pendente">Pronto para enviar</span>
+            <?php else: ?>
+                <span class="status-pill pendente">Aguardando os jurados</span>
+            <?php endif; ?>
+        </div>
+
+        <p class="resultado-destinos">
+            <?php if ($destinos === []): ?>
+                <span class="erro-texto">Nenhum número cadastrado.</span>
+                Informe em Configurações › WhatsApp quem deve receber o resultado.
+            <?php else: ?>
+                Vai para:
+                <?php foreach ($destinos as $tel): ?>
+                    <strong><?= h(wa_telefone_exibicao($tel)) ?></strong><?= $tel === end($destinos) ? '' : ' · ' ?>
+                <?php endforeach; ?>
+            <?php endif; ?>
+        </p>
+
+        <?php if ($destinos !== []): ?>
+            <form method="post" class="resultado-acoes">
+                <input type="hidden" name="action" value="enviar_resultado">
+                <input type="hidden" name="event_id" value="<?= $eventId ?>">
+                <button class="button <?= $enviado ? 'ghost' : 'primary' ?>" type="submit"
+                        <?= $andamento['completo'] ? '' : 'disabled title="Nem todos os jurados finalizaram."' ?>>
+                    <?= $enviado ? 'Enviar novamente' : 'Enviar agora' ?>
+                </button>
+                <a class="button ghost" href="?page=dashboard&section=mensagens">Ver mensagens enviadas</a>
+            </form>
+        <?php endif; ?>
+    </section>
+    <?php
+
+    return (string)ob_get_clean();
+}
+
 function render_monitor_page(): void
 {
     /* [SEGURANCA] Esta tela estava aberta a qualquer visitante e mostrava o
@@ -7211,6 +7372,10 @@ function render_monitor_page(): void
                 <span>Pendentes</span>
             </div>
         </section>
+
+        <?php if ($eventId): ?>
+            <?= render_resultado_final($db, $eventId) ?>
+        <?php endif; ?>
 
         <div class="monitor-legend">
             <span class="monitor-pill done">Concluído</span>
