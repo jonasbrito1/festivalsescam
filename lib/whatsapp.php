@@ -33,6 +33,11 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/mysql.php';
 
+/* Segundo caminho de saída: sessão de WhatsApp comum, sem passar pela Meta.
+ * Existe porque a Cloud API não entrega texto livre fora da janela de 24
+ * horas — ver lib/evolution.php. */
+require_once __DIR__ . '/evolution.php';
+
 /* ===========================================================================
  * CONFIGURAÇÃO
  * ======================================================================== */
@@ -108,7 +113,7 @@ function wa_salvar_config(array $valores): bool
         return false;
     }
 
-    $sigilosos = ['wa_token'];
+    $sigilosos = ['wa_token', 'wa_evo_chave'];
 
     try {
         $sql = $pdo->prepare(
@@ -147,6 +152,10 @@ function wa_ativo(): bool
     }
 
     // Precisa de um caminho de saída válido.
+    if (wa_provedor() === 'evolution') {
+        return evo_configurado();
+    }
+
     if (wa_get('wa_endpoint') !== '') {
         return true;
     }
@@ -376,10 +385,25 @@ function wa_higienizar(string $texto): string
  * ======================================================================== */
 
 /**
+ * Qual caminho de saída está escolhido.
+ *
+ * 'evolution' — sessão de WhatsApp comum, por QR Code. Sem janela de 24h.
+ * 'meta'      — WhatsApp Cloud API oficial.
+ */
+function wa_provedor(): string
+{
+    return wa_get('wa_provedor') === 'evolution' ? 'evolution' : 'meta';
+}
+
+/**
  * Faz o disparo de fato. @return array{ok:bool,erro:string,id?:string}
  */
 function wa_disparar(string $telefone, string $texto): array
 {
+    if (wa_provedor() === 'evolution') {
+        return evo_enviar_texto($telefone, $texto);
+    }
+
     $endpoint = wa_get('wa_endpoint');
 
     return $endpoint !== ''

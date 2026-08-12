@@ -3000,6 +3000,11 @@ function handle_post(): void
             'wa_ddi_padrao'      => preg_replace('/\D+/', '', (string)($_POST['wa_ddi_padrao'] ?? '55')) ?: '55',
             'wa_resultado_ativo' => isset($_POST['wa_resultado_ativo']) ? '1' : '0',
             'wa_resultado_para'  => clean($_POST['wa_resultado_para'] ?? ''),
+            'wa_provedor'        => ($_POST['wa_provedor'] ?? 'meta') === 'evolution' ? 'evolution' : 'meta',
+            'wa_evo_url'         => rtrim(clean($_POST['wa_evo_url'] ?? ''), '/'),
+            'wa_evo_instancia'   => clean($_POST['wa_evo_instancia'] ?? ''),
+            // Em branco preserva a chave já gravada — ver wa_salvar_config().
+            'wa_evo_chave'       => (string)($_POST['wa_evo_chave'] ?? ''),
         ]);
 
         flash($ok ? 'Configuração do WhatsApp salva.' : 'Não foi possível salvar a configuração.', $ok ? 'success' : 'error');
@@ -3036,6 +3041,33 @@ function handle_post(): void
         $r = resultado_enviar($db, $eventId, 'manual', true);
         flash($r['mensagem'], $r['ok'] ? 'success' : 'error');
         redirect_to('acompanhamento', ['event_id' => $eventId]);
+    }
+
+    /* Ligar ou desligar a sessão de WhatsApp do número comum. */
+    if ($action === 'conectar_whatsapp') {
+        require_admin();
+
+        if (!empty($_POST['desconectar'])) {
+            $r = evo_desconectar();
+            flash($r['ok'] ? 'WhatsApp desconectado.' : 'Não foi possível desconectar: ' . $r['erro'],
+                $r['ok'] ? 'success' : 'error');
+            redirect_to('dashboard', ['section' => 'whatsapp', 'event_id' => active_event_id($db)]);
+        }
+
+        $r = evo_conectar();
+
+        if (!$r['ok']) {
+            flash($r['erro'], 'error');
+        } elseif (($r['estado'] ?? '') === 'open') {
+            flash('O WhatsApp já está conectado.');
+        } else {
+            /* O QR viaja pela sessão porque a tela é recarregada por redirect —
+               sem isso, um F5 depois de conectar tentaria gerar outro código. */
+            $_SESSION['wa_qr'] = ['qr' => $r['qr'], 'pareamento' => $r['pareamento']];
+            flash('Leia o QR Code com o celular que vai enviar as mensagens.');
+        }
+
+        redirect_to('dashboard', ['section' => 'whatsapp', 'event_id' => active_event_id($db)]);
     }
 
     if ($action === 'testar_whatsapp') {
@@ -4407,6 +4439,94 @@ function render_secao_usuarios(array $db, int $eventId): void
     <?php
 }
 
+/**
+ * O quadro de conexão do WhatsApp por QR Code.
+ *
+ * É a tela que resolve, sem suporte técnico, o problema mais provável do dia
+ * do festival: a sessão caiu e ninguém percebeu. Mostra o estado, o número
+ * conectado, e o QR para religar.
+ */
+function render_whatsapp_conexao(): string
+{
+    $c = wa_config();
+    $porQr = ($c['wa_provedor'] ?? 'meta') === 'evolution';
+    $estado = $porQr && evo_configurado() ? evo_estado() : null;
+    $qr = $_SESSION['wa_qr'] ?? null;
+    unset($_SESSION['wa_qr']);
+
+    ob_start();
+    ?>
+    <section class="panel wa-conexao">
+        <div class="wa-conexao-topo">
+            <div>
+                <h2>Conexão do WhatsApp</h2>
+                <?php if (!$porQr): ?>
+                    <p class="muted">Saindo pela Cloud API da Meta. Para usar um número comum,
+                        troque o campo “Como as mensagens saem” abaixo e salve.</p>
+                <?php elseif (!evo_configurado()): ?>
+                    <p class="muted">Falta informar o endereço, a instância e a chave do gateway.</p>
+                <?php elseif ($estado['conectado']): ?>
+                    <p class="muted">Conectado
+                        <?php if ($estado['numero'] !== ''): ?>
+                            pelo número <strong><?= h(wa_telefone_exibicao($estado['numero'])) ?></strong>
+                        <?php endif; ?>
+                        — as mensagens saem por aqui.</p>
+                <?php else: ?>
+                    <p class="muted">Sessão <?= h($estado['estado']) ?>. Leia o QR Code abaixo com o
+                        celular que vai enviar as mensagens.</p>
+                <?php endif; ?>
+            </div>
+
+            <?php if ($porQr && evo_configurado()): ?>
+                <span class="status-pill <?= $estado['conectado'] ? 'enviado' : 'pendente' ?>">
+                    <?= $estado['conectado'] ? 'Conectado' : 'Desconectado' ?>
+                </span>
+            <?php endif; ?>
+        </div>
+
+        <?php if ($porQr && evo_configurado() && ($estado['erro'] ?? '') !== ''): ?>
+            <p class="erro-texto"><?= h($estado['erro']) ?></p>
+        <?php endif; ?>
+
+        <?php if ($qr): ?>
+            <div class="wa-qr">
+                <img src="<?= h((string)$qr['qr']) ?>" alt="QR Code para conectar o WhatsApp" width="260" height="260">
+                <div>
+                    <strong>Como ligar</strong>
+                    <ol>
+                        <li>Abra o WhatsApp no celular que vai enviar.</li>
+                        <li>Toque em <em>Configurações › Dispositivos conectados</em>.</li>
+                        <li>Toque em <em>Conectar dispositivo</em> e aponte para este código.</li>
+                    </ol>
+                    <?php if (($qr['pareamento'] ?? '') !== ''): ?>
+                        <p>Ou use o código de pareamento: <strong><?= h((string)$qr['pareamento']) ?></strong></p>
+                    <?php endif; ?>
+                    <p class="dica">O código expira em cerca de 40 segundos. Se expirar, clique em
+                        “Gerar QR Code” de novo.</p>
+                </div>
+            </div>
+        <?php endif; ?>
+
+        <?php if ($porQr): ?>
+            <form method="post" class="resultado-acoes">
+                <input type="hidden" name="action" value="conectar_whatsapp">
+                <button class="button <?= ($estado['conectado'] ?? false) ? 'ghost' : 'primary' ?>" type="submit">
+                    <?= ($estado['conectado'] ?? false) ? 'Reconectar' : 'Gerar QR Code' ?>
+                </button>
+                <?php if ($estado['conectado'] ?? false): ?>
+                    <button class="button ghost" type="submit" name="desconectar" value="1"
+                            onclick="return confirm('Desligar a sessão? As mensagens deixam de sair até alguém ler o QR de novo.')">
+                        Desconectar
+                    </button>
+                <?php endif; ?>
+            </form>
+        <?php endif; ?>
+    </section>
+    <?php
+
+    return (string)ob_get_clean();
+}
+
 /** Configuração da integração com o WhatsApp. */
 function render_secao_whatsapp(array $db, int $eventId): void
 {
@@ -4417,11 +4537,29 @@ function render_secao_whatsapp(array $db, int $eventId): void
             <h2>WhatsApp</h2>
         </div>
 
+        <?= render_whatsapp_conexao() ?>
+
         <div class="config-duas">
             <div class="panel form-stack compact-form">
                 <h2>Canal WhatsApp Cloud API</h2>
                 <form method="post" class="form-stack" autocomplete="off">
                     <input type="hidden" name="action" value="save_whatsapp">
+
+                    <label>Como as mensagens saem
+                        <select name="wa_provedor">
+                            <option value="evolution" <?= ($c['wa_provedor'] ?? 'meta') === 'evolution' ? 'selected' : '' ?>>
+                                Número comum, por QR Code (entrega sempre)
+                            </option>
+                            <option value="meta" <?= ($c['wa_provedor'] ?? 'meta') === 'meta' ? 'selected' : '' ?>>
+                                WhatsApp Cloud API, da Meta (só dentro de 24h)
+                            </option>
+                        </select>
+                    </label>
+                    <p class="dica">
+                        A Cloud API só entrega texto livre se a pessoa tiver escrito para o número
+                        da empresa nas últimas 24 horas. Quem só recebe — como a coordenação do
+                        festival — nunca abre essa janela, e a mensagem é aceita mas não chega.
+                    </p>
 
                     <label>Número de saída
                         <input name="wa_numero_saida" value="<?= h($c['wa_numero_saida'] ?? '') ?>" placeholder="(92) 98487-8678">
@@ -4469,6 +4607,26 @@ function render_secao_whatsapp(array $db, int $eventId): void
                         <input name="wa_endpoint" value="<?= h($c['wa_endpoint'] ?? '') ?>" placeholder="http://127.0.0.1:3000/api/whatsapp/send">
                     </label>
                     <p class="dica">Se preenchido, as mensagens vão para este serviço em vez da Graph API.</p>
+
+                    <?php /* Gateway do número comum. Só faz sentido no modo por QR Code,
+                             mas os campos ficam sempre visíveis: escondê-los faria a troca
+                             de canal exigir dois salvamentos. */ ?>
+                    <h3>Gateway do número comum</h3>
+
+                    <label>Endereço do gateway
+                        <input name="wa_evo_url" value="<?= h($c['wa_evo_url'] ?? '') ?>" placeholder="http://127.0.0.1:8088">
+                    </label>
+
+                    <label>Nome da sessão
+                        <input name="wa_evo_instancia" value="<?= h($c['wa_evo_instancia'] ?? '') ?>" placeholder="festival-sesc">
+                    </label>
+
+                    <label>Chave do gateway
+                        <input name="wa_evo_chave" type="password" autocomplete="new-password"
+                               placeholder="<?= ($c['wa_evo_chave'] ?? '') !== '' ? '•••••••• (já configurada — deixe em branco para manter)' : 'cole a chave aqui' ?>">
+                    </label>
+                    <p class="dica">A chave nunca é exibida de volta, pelo mesmo motivo do token:
+                        bastaria abrir o código-fonte da página para copiá-la.</p>
 
                     <label>DDI padrão
                         <input name="wa_ddi_padrao" value="<?= h($c['wa_ddi_padrao'] ?? '55') ?>" inputmode="numeric" size="4">

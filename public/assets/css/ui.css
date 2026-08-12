@@ -3251,6 +3251,72 @@ td {
     }
 }
 
+/* ---------------------------------------------------------------------------
+   16. Conexão do WhatsApp por QR Code
+   ------------------------------------------------------------------------- */
+.wa-conexao {
+    display: grid;
+    gap: var(--esp-3);
+    margin-bottom: var(--esp-4);
+}
+
+.wa-conexao-topo {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--esp-3);
+}
+
+.wa-conexao h2 {
+    margin: 0 0 var(--esp-1);
+}
+
+.wa-conexao p {
+    margin: 0;
+}
+
+.wa-qr {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--esp-5);
+    align-items: flex-start;
+    padding: var(--esp-4);
+    border: 1px solid var(--line, #dde3ec);
+    border-radius: var(--ui-raio-g);
+    background: #f7f9fd;
+}
+
+/* Fundo branco garantido: um QR sobre fundo colorido pode não ser lido, e a
+   pessoa fica tentando sem entender por quê. */
+.wa-qr img {
+    padding: var(--esp-2);
+    border-radius: var(--ui-raio);
+    background: #fff;
+}
+
+.wa-qr ol {
+    margin: var(--esp-2) 0;
+    padding-left: 1.2em;
+    line-height: 1.7;
+}
+
+.wa-qr strong {
+    color: var(--sesc-blue, #002f8f);
+}
+
+@media (max-width: 620px) {
+    .wa-qr {
+        justify-content: center;
+    }
+
+    .wa-qr img {
+        width: 100%;
+        max-width: 260px;
+        height: auto;
+    }
+}
+
 @media print {
     .app-menu-btn,
     .menu-overlay {
