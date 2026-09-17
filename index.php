@@ -5,6 +5,7 @@ const DB_FILE = DATA_DIR . '/db.json';
 /* Assinatura do que ja esta gravado em db.json — ver write_local_database(). */
 const DB_ASSINATURA_FILE = DATA_DIR . '/db.assinatura';
 const PARTICIPANT_UPLOAD_DIR = __DIR__ . '/public/uploads/participants';
+const JUDGE_UPLOAD_DIR = __DIR__ . '/public/uploads/judges';
 
 /* Cache minimo: memoria de uma requisicao, para nao perguntar a mesma coisa
  * ao banco varias vezes na mesma tela — ver lib/cache.php. */
@@ -35,6 +36,10 @@ require_once __DIR__ . '/lib/regras.php';
  * lib/resultado.php. */
 require_once __DIR__ . '/lib/resultado.php';
 
+/* Relatorios do modulo "Criar relatorio" em PDF baixavel — ver
+ * lib/relatorio_pdf.php. */
+require_once __DIR__ . '/lib/relatorio_pdf.php';
+
 /* ---------------------------------------------------------------------------
  * [SEGURANCA] Onde ficam os arquivos de sessao.
  *
@@ -57,8 +62,18 @@ if ($sessaoExterna !== '' && is_dir($sessaoExterna)) {
 $sobreHttps = (($_SERVER['HTTPS'] ?? '') === 'on')
     || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
 
+/* O cookie precisa sobreviver ao aparelho ser desligado.
+ *
+ * Com lifetime 0 ele durava enquanto o navegador estivesse aberto: bastava o
+ * tablet reiniciar, ou o Chrome ser encerrado, para o jurado voltar deslogado
+ * no meio do festival. Vinte e quatro horas cobrem um dia inteiro de evento.
+ *
+ * O prazo conta a partir do login e nao se renova a cada acesso — num festival
+ * de varios dias, cada dia comeca com um login novo, o que e aceitavel. */
+const SESSAO_COOKIE_VIDA = 24 * 3600;
+
 session_set_cookie_params([
-    'lifetime' => 0,
+    'lifetime' => SESSAO_COOKIE_VIDA,
     'path'     => '/',
     'secure'   => $sobreHttps,
     'httponly' => true,
@@ -66,6 +81,10 @@ session_set_cookie_params([
 ]);
 ini_set('session.use_strict_mode', '1');
 ini_set('session.use_only_cookies', '1');
+/* O arquivo da sessao no servidor precisa viver ao menos o mesmo tanto: hoje a
+   coleta do PHP esta desligada (gc_probability = 0), mas se um dia for ligada,
+   sem isto ela apagaria sessoes ainda em uso depois de 24 minutos. */
+ini_set('session.gc_maxlifetime', (string)SESSAO_COOKIE_VIDA);
 
 session_start();
 
@@ -94,10 +113,29 @@ function csrf_validar(): void
     $enviado = $_POST['_csrf'] ?? '';
     $esperado = $_SESSION['_csrf'] ?? '';
 
-    if (!is_string($enviado) || $esperado === '' || !hash_equals($esperado, $enviado)) {
-        http_response_code(419);
-        exit('Sessão expirada ou requisicao invalida. Recarregue a página e tente novamente.');
+    if (is_string($enviado) && $esperado !== '' && hash_equals($esperado, $enviado)) {
+        return;
     }
+
+    http_response_code(419);
+
+    /* O painel do jurado envia por fetch e lia a resposta SEMPRE como JSON.
+     * Devolvendo texto puro, o JSON.parse estourava no navegador e o erro
+     * chegava ao tratamento sem código de status — indistinguível de queda de
+     * rede. A nota ia para a fila de reenvio, o jurado lia "conexão instável",
+     * e a fila repetia o mesmo token vencido indefinidamente: nada era salvo e
+     * a causa real nunca aparecia na tela. */
+    if (is_json_request()) {
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode([
+            'ok'      => false,
+            'code'    => 'csrf',
+            'message' => 'Sua sessão expirou. A página vai recarregar; suas notas foram guardadas neste aparelho.',
+        ], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+
+    exit('Sessão expirada ou requisicao invalida. Recarregue a página e tente novamente.');
 }
 
 function csrf_injetar(string $html): string
@@ -129,20 +167,36 @@ ob_start('csrf_injetar');
  * Quatro horas cobrem um festival inteiro sem derrubar jurado no meio da
  * votacao, e ainda assim fecham a porta depois do evento.
  * ------------------------------------------------------------------------- */
-const SESSAO_INATIVIDADE = 4 * 3600;
+/* JURADO NAO EXPIRA. ADMINISTRADOR SIM.
+ *
+ * As quatro horas antigas valiam para os dois, e derrubavam o jurado no meio
+ * do trabalho: o tablet fica parado entre uma apresentacao e outra, e a
+ * votacao continua depois. Pior, caia de um jeito que a tela nao explicava —
+ * a propria requisicao que encontrava a sessao vencida a destruia e gerava um
+ * token novo, entao o salvamento seguinte era recusado com 419 e o painel
+ * dizia "conexao instavel". Foi o que travou um jurado no dia 28/08.
+ *
+ * O que limita o jurado ja e outra coisa: o prazo de avaliacao do evento
+ * (evaluation_minutes) e a entrega da ficha. O relogio da sessao so atrapalha.
+ *
+ * O administrador continua expirando porque o painel dele comanda o festival
+ * inteiro — e essa trava existe para o notebook esquecido em cima da mesa.
+ * Doze horas cobrem um dia de evento e ainda fecham a porta durante a noite.
+ */
+const SESSAO_INATIVIDADE_ADMIN  = 12 * 3600;
+const SESSAO_INATIVIDADE_JURADO = 0;   // 0 = nao expira
 
-if (isset($_SESSION['admin_id']) || isset($_SESSION['judge_id'])) {
-    $ultimo = $_SESSION['_ultimo_acesso'] ?? time();
+$limiteInatividade = isset($_SESSION['admin_id'])
+    ? SESSAO_INATIVIDADE_ADMIN
+    : (isset($_SESSION['judge_id']) ? SESSAO_INATIVIDADE_JURADO : 0);
 
-    if (time() - $ultimo > SESSAO_INATIVIDADE) {
-        $_SESSION = [];
-        session_destroy();
-        session_start();
-        csrf_token();
-        $_SESSION['flash'] = ['message' => 'Sua sessao expirou por inatividade. Entre novamente.', 'type' => 'error'];
-    } else {
-        $_SESSION['_ultimo_acesso'] = time();
-    }
+if ($limiteInatividade > 0
+    && (time() - (int)($_SESSION['_ultimo_acesso'] ?? time())) > $limiteInatividade) {
+    $_SESSION = [];
+    session_destroy();
+    session_start();
+    csrf_token();
+    $_SESSION['flash'] = ['message' => 'Sua sessao expirou por inatividade. Entre novamente.', 'type' => 'error'];
 } else {
     $_SESSION['_ultimo_acesso'] = time();
 }
@@ -1266,6 +1320,122 @@ function participant_photo_html(array $participant, string $class = ''): string
     return '<span class="participant-photo placeholder ' . h($class) . '">' . h(initials($participant['name'] ?? 'P')) . '</span>';
 }
 
+/* ===========================================================================
+ * FOTO DO JURADO
+ *
+ * Espelha o que já existia para o participante, em vez de generalizar as duas
+ * numa função só. A foto do participante está em uso por 109 cadastros; unir
+ * as duas agora significaria mexer num caminho que funciona para ganhar
+ * elegância. O dia do festival não é hora de pagar esse risco.
+ * ======================================================================== */
+
+/**
+ * Apaga com segurança a foto de um jurado.
+ *
+ * Só remove dentro da pasta de fotos de jurado: o caminho vem do banco, mas um
+ * valor adulterado ali não pode virar exclusão de arquivo do sistema.
+ */
+function remover_foto_jurado(string $caminhoRelativo): void
+{
+    if ($caminhoRelativo === '' || !str_starts_with($caminhoRelativo, 'public/uploads/judges/')) {
+        return;
+    }
+
+    $alvo = realpath(__DIR__ . '/' . $caminhoRelativo);
+    $base = realpath(JUDGE_UPLOAD_DIR);
+
+    if ($alvo && $base && str_starts_with($alvo, $base . DIRECTORY_SEPARATOR) && is_file($alvo)) {
+        @unlink($alvo);
+    }
+}
+
+/**
+ * Recebe a foto enviada no formulário de jurado.
+ *
+ * Devolve o caminho relativo gravado, ou '' quando não veio arquivo — quem
+ * chama decide se mantém a foto anterior.
+ */
+function upload_judge_photo(int $judgeId): string
+{
+    if (empty($_FILES['photo']['tmp_name']) || !is_uploaded_file($_FILES['photo']['tmp_name'])) {
+        return '';
+    }
+
+    /* [SEGURANCA] O tipo vem do cabeçalho binário do arquivo, nunca do nome
+     * enviado: um .php renomeado para .jpg não passa por getimagesize(). A
+     * extensão gravada deriva do tipo detectado. */
+    $tipos = [
+        IMAGETYPE_JPEG => 'jpg',
+        IMAGETYPE_PNG  => 'png',
+        IMAGETYPE_WEBP => 'webp',
+    ];
+
+    $info = @getimagesize($_FILES['photo']['tmp_name']);
+    if ($info === false || !isset($tipos[$info[2]])) {
+        return '';
+    }
+
+    if (($_FILES['photo']['size'] ?? 0) > 5 * 1024 * 1024) {
+        return '';
+    }
+
+    if (!is_dir(JUDGE_UPLOAD_DIR)) {
+        mkdir(JUDGE_UPLOAD_DIR, 0775, true);
+    }
+
+    $extension = $tipos[$info[2]];
+    $filename = 'jurado-' . $judgeId . '.' . $extension;
+    $target = JUDGE_UPLOAD_DIR . '/' . $filename;
+
+    if (move_uploaded_file($_FILES['photo']['tmp_name'], $target)) {
+        @chmod($target, 0644);
+
+        /* Trocar de formato (jpg -> png) deixaria o arquivo antigo órfão no
+           disco, e o caminho gravado apontaria para o novo. Limpa os outros. */
+        foreach ($tipos as $ext) {
+            if ($ext !== $extension) {
+                @unlink(JUDGE_UPLOAD_DIR . '/jurado-' . $judgeId . '.' . $ext);
+            }
+        }
+
+        return 'public/uploads/judges/' . $filename;
+    }
+
+    return '';
+}
+
+function judge_photo_html(array $judge, string $class = ''): string
+{
+    $photo = (string)($judge['photo'] ?? '');
+
+    if ($photo !== '') {
+        return '<img class="participant-photo ' . h($class) . '" src="' . h($photo) . '" alt="Foto de ' . h($judge['name'] ?? 'jurado') . '">';
+    }
+
+    return '<span class="participant-photo placeholder ' . h($class) . '">' . h(initials($judge['name'] ?? 'J')) . '</span>';
+}
+
+/**
+ * Em quais eventos esta pessoa julga.
+ *
+ * O cadastro guarda uma linha por (jurado, evento) e a identidade da pessoa é
+ * o username — é assim que o login reúne os acessos dela. Devolve o mapa
+ * event_id => linha do jurado.
+ */
+function jurado_linhas_por_evento(array $db, string $username): array
+{
+    $username = mb_strtolower(trim($username));
+    $saida = [];
+
+    foreach ($db['judges'] ?? [] as $j) {
+        if (mb_strtolower((string)$j['username']) === $username) {
+            $saida[(int)$j['event_id']] = $j;
+        }
+    }
+
+    return $saida;
+}
+
 function evaluation_seconds_from_event(?array $event): int
 {
     $minutes = (int)($event['evaluation_minutes'] ?? 136);
@@ -1646,6 +1816,42 @@ function items_for_event(array $items, int $eventId): array
     return array_values(array_filter($items, fn($item) => (int)$item['event_id'] === $eventId));
 }
 
+/* ===========================================================================
+ * ORDENAÇÃO
+ *
+ * items_for_event() só FILTRA. Quem quiser a lista na ordem certa precisa
+ * pedir — e por muito tempo ninguém pediu no painel do administrador, então
+ * mudar a "Ordem" de um participante não movia a linha de lugar. O campo
+ * salvava; a tela é que ignorava.
+ * ======================================================================== */
+
+/** Participantes na ordem de apresentação; empate pelo nome. */
+function ordenar_participantes(array $participantes): array
+{
+    usort($participantes, static fn(array $a, array $b): int =>
+        ((int)($a['order'] ?? 0) <=> (int)($b['order'] ?? 0))
+        ?: strcmp((string)($a['name'] ?? ''), (string)($b['name'] ?? '')));
+
+    return $participantes;
+}
+
+/**
+ * Critérios na ordem da ficha; empate pelo id.
+ *
+ * O desempate por id, e não por nome, é de propósito: eventos antigos têm
+ * display_order = 0 em todos os critérios, e nesses o resultado continua sendo
+ * exatamente a ordem de cadastro — nada muda de lugar para quem já estava
+ * avaliando.
+ */
+function ordenar_criterios(array $criterios): array
+{
+    usort($criterios, static fn(array $a, array $b): int =>
+        ((int)($a['display_order'] ?? 0) <=> (int)($b['display_order'] ?? 0))
+        ?: ((int)($a['id'] ?? 0) <=> (int)($b['id'] ?? 0)));
+
+    return $criterios;
+}
+
 function ranking_for_event(array $db, int $eventId): array
 {
     $participants = items_for_event($db['participants'] ?? [], $eventId);
@@ -2024,6 +2230,217 @@ function judge_progress_for_event(array $db, int $eventId): array
     return $progress;
 }
 
+/**
+ * Ranking de UM quesito.
+ *
+ * O ranking geral mistura todos os critérios; este isola um. É o que a
+ * organização pede quando quer saber, por exemplo, qual grupo teve a melhor
+ * torcida — independentemente de como foi a apresentação.
+ *
+ * Classifica pela MÉDIA dos jurados, como o ranking geral. Somar favoreceria
+ * quem foi avaliado por mais gente, o que não é mérito; a soma aparece ao lado
+ * porque é o número que a coordenação confere contra a folha de papel.
+ *
+ * Penalidades não entram: elas descontam da nota GERAL do grupo (itens 3.5,
+ * 4 parágrafo único e 7.3 na Batalha; seção 8 na Junina), e não de um quesito.
+ *
+ * @return list<array{participant:array, media:float, soma:float, jurados:int, posicao:int}>
+ */
+function ranking_por_criterio(array $db, int $eventId, int $criterionId): array
+{
+    $participantes = ordenar_participantes(items_for_event($db['participants'] ?? [], $eventId));
+
+    $notas = [];
+    foreach (items_for_event($db['votes'] ?? [], $eventId) as $v) {
+        if ((int)$v['criterion_id'] === $criterionId) {
+            $notas[(int)$v['participant_id']][(int)$v['judge_id']] = (float)$v['score'];
+        }
+    }
+
+    $linhas = [];
+    foreach ($participantes as $p) {
+        $doParticipante = $notas[(int)$p['id']] ?? [];
+        $qtd = count($doParticipante);
+        $soma = array_sum($doParticipante);
+
+        $linhas[] = [
+            'participant' => $p,
+            'media'       => $qtd > 0 ? $soma / $qtd : 0.0,
+            'soma'        => (float)$soma,
+            'jurados'     => $qtd,
+        ];
+    }
+
+    usort($linhas, static fn(array $a, array $b): int =>
+        ((float)$b['media'] <=> (float)$a['media'])
+        ?: strcmp((string)$a['participant']['name'], (string)$b['participant']['name']));
+
+    /* Empate divide a posição: dois com 9,80 são os dois em 1º, e o seguinte é
+       3º. Numerar em sequência inventaria uma diferença que a apuração não
+       encontrou — mesma regra usada no texto do resultado final. */
+    $posicao = 0;
+    $iguais = 0;
+    $anterior = null;
+
+    foreach ($linhas as $i => $linha) {
+        if ($anterior !== null && abs((float)$linha['media'] - $anterior) < 0.005) {
+            $iguais++;
+        } else {
+            $posicao += 1 + $iguais;
+            $iguais = 0;
+        }
+
+        $anterior = (float)$linha['media'];
+        $linhas[$i]['posicao'] = $posicao;
+    }
+
+    return $linhas;
+}
+
+/**
+ * Eventos que entram no consolidado.
+ *
+ * Ficam de fora os arquivados — festival encerrado, já é o comportamento de
+ * event_options() — e também os que estão em RASCUNHO: um evento nesse estado
+ * é montagem em andamento ou teste, e num relatório consolidado só atrapalha
+ * quem lê. Para tirar um evento já publicado do relatório, o caminho continua
+ * sendo arquivá-lo.
+ */
+function relatorio_eventos_consolidado(array $db): array
+{
+    return array_values(array_filter(
+        event_options($db),
+        static fn(array $e): bool => ($e['status'] ?? '') !== 'rascunho'
+    ));
+}
+
+/**
+ * Lê os filtros do módulo de relatórios a partir da URL.
+ *
+ * A mesma leitura serve à tela e ao download em PDF. Separada de propósito:
+ * duas cópias iriam divergir, e um relatório que aparece na tela diferente do
+ * que sai no arquivo é pior do que não ter o arquivo.
+ *
+ * @return array{tipo:string, criterio:string, participante:string, busca:string,
+ *               quesitos:array, participantes_filtrados:array, alvos:array}
+ */
+function relatorio_filtros(array $criteria, array $participants, array $get): array
+{
+    $tipo = trim((string)($get['tipo'] ?? 'quesito'));
+    $criterioPedido = trim((string)($get['criterio'] ?? ''));
+    $participantePedido = trim((string)($get['participante'] ?? ''));
+    $busca = trim((string)($get['busca'] ?? ''));
+
+    $quesitos = [];
+    if ($criterioPedido === 'todos') {
+        $quesitos = $criteria;
+    } elseif ($criterioPedido !== '') {
+        foreach ($criteria as $c) {
+            if ((int)$c['id'] === (int)$criterioPedido) {
+                $quesitos = [$c];
+                break;
+            }
+        }
+    }
+
+    /* A busca por nome filtra a lista antes de qualquer seleção: num evento
+       com dezenas de quadrilhas, rolar o seletor inteiro para achar uma é pior
+       do que digitar três letras. */
+    $participantesFiltrados = $participants;
+    if ($busca !== '') {
+        $participantesFiltrados = array_values(array_filter(
+            $participants,
+            static fn(array $p): bool => mb_stripos((string)($p['name'] ?? ''), $busca) !== false
+        ));
+    }
+
+    $alvos = [];
+    if ($participantePedido === 'todos') {
+        $alvos = $participantesFiltrados;
+    } elseif ($participantePedido !== '') {
+        foreach ($participants as $p) {
+            if ((int)$p['id'] === (int)$participantePedido) {
+                $alvos = [$p];
+                break;
+            }
+        }
+    }
+
+    return [
+        'tipo'                    => $tipo,
+        'criterio'                => $criterioPedido,
+        'participante'            => $participantePedido,
+        'busca'                   => $busca,
+        'quesitos'                => $quesitos,
+        'participantes_filtrados' => $participantesFiltrados,
+        'alvos'                   => $alvos,
+    ];
+}
+
+/**
+ * Ficha individual de um participante.
+ *
+ * É o relatório que a coordenação entrega a uma quadrilha que pergunta "onde
+ * eu perdi ponto": a nota de cada jurado em cada quesito, com a justificativa
+ * que o regulamento exige abaixo de 10, mais observação e assinatura de cada
+ * um, e as penalidades aplicadas.
+ *
+ * Devolve os dados crus; quem desenha decide o formato.
+ */
+function relatorio_participante(array $db, int $eventId, int $participantId): array
+{
+    $criterios = ordenar_criterios(items_for_event($db['criteria'] ?? [], $eventId));
+
+    /* Só jurados ATIVOS entram no relatório.
+     *
+     * É assim que os cadastros de teste saem de cena: marcados como inativos,
+     * eles somem da ficha em vez de aparecer como uma coluna inteira de
+     * traços, ao lado de quem realmente avaliou.
+     *
+     * Vale para a exibição. Desativar alguém que JÁ lançou notas não apaga as
+     * notas do ranking — para isso o caminho é excluir o jurado ou reabrir a
+     * ficha, e não mudar a situação dele. */
+    $jurados = array_values(array_filter(
+        items_for_event($db['judges'] ?? [], $eventId),
+        static fn(array $j): bool => ($j['status'] ?? 'ativo') === 'ativo'
+    ));
+    usort($jurados, static fn(array $a, array $b): int => strcmp((string)$a['name'], (string)$b['name']));
+
+    /* Indexado por critério e jurado: a tabela é desenhada quesito a quesito,
+       com uma coluna por jurado, e sem índice cada célula viraria uma busca. */
+    $notas = [];
+    foreach (items_for_event($db['votes'] ?? [], $eventId) as $v) {
+        if ((int)$v['participant_id'] === $participantId) {
+            $notas[(int)$v['criterion_id']][(int)$v['judge_id']] = $v;
+        }
+    }
+
+    $observacoes = [];
+    foreach (($db['observations'] ?? []) as $o) {
+        if ((int)$o['event_id'] === $eventId && (int)$o['participant_id'] === $participantId) {
+            $observacoes[(int)$o['judge_id']] = (string)($o['text'] ?? '');
+        }
+    }
+
+    $pareceres = [];
+    foreach (($db['judge_reviews'] ?? []) as $r) {
+        if ((int)$r['event_id'] === $eventId && (int)$r['participant_id'] === $participantId) {
+            $pareceres[(int)$r['judge_id']] = $r;
+        }
+    }
+
+    $aplicadas = function_exists('penalidades_aplicadas') ? penalidades_aplicadas($eventId) : [];
+
+    return [
+        'criterios'   => $criterios,
+        'jurados'     => $jurados,
+        'notas'       => $notas,
+        'observacoes' => $observacoes,
+        'pareceres'   => $pareceres,
+        'penalidades' => $aplicadas[$participantId] ?? ['total' => 0.0, 'itens' => []],
+    ];
+}
+
 function detailed_votes_for_event(array $db, int $eventId): array
 {
     $participants = items_for_event($db['participants'] ?? [], $eventId);
@@ -2035,55 +2452,67 @@ function detailed_votes_for_event(array $db, int $eventId): array
         $scoreByParticipant[(int)$row['participant']['id']] = (float)$row['total_score'];
     }
 
-    $criteriaById = [];
-    foreach ($criteria as $criterion) {
-        $criteriaById[(int)$criterion['id']] = $criterion;
+    /* ÍNDICES MONTADOS UMA VEZ SÓ.
+     *
+     * observation_for() e judge_review_for() varrem a tabela inteira a cada
+     * chamada, e eram chamadas participantes × jurados vezes: num evento com
+     * 40 participantes e 4 jurados, 160 varreduras completas apenas para
+     * montar a exportação. E a busca do voto de cada critério era outra
+     * varredura, dentro do laço mais interno.
+     *
+     * Aqui tudo sai de índices construídos numa passada. */
+    $observacoes = [];
+    foreach (($db['observations'] ?? []) as $o) {
+        if ((int)$o['event_id'] === $eventId) {
+            $observacoes[(int)$o['judge_id'] . ':' . (int)$o['participant_id']] = $o;
+        }
     }
 
-    $votesByJudgeParticipant = [];
+    $pareceres = [];
+    foreach (($db['judge_reviews'] ?? []) as $r) {
+        if ((int)$r['event_id'] === $eventId) {
+            $pareceres[(int)$r['judge_id'] . ':' . (int)$r['participant_id']] = $r;
+        }
+    }
+
+    $votos = [];
+    $totalPorFicha = [];
     foreach (items_for_event($db['votes'] ?? [], $eventId) as $vote) {
-        $judgeParticipantKey = (int)$vote['judge_id'] . ':' . (int)$vote['participant_id'];
-        $votesByJudgeParticipant[$judgeParticipantKey][] = $vote;
+        $ficha = (int)$vote['judge_id'] . ':' . (int)$vote['participant_id'];
+        $votos[$ficha . ':' . (int)$vote['criterion_id']] = $vote;
+        $totalPorFicha[$ficha] = ($totalPorFicha[$ficha] ?? 0.0) + (float)$vote['score'];
     }
 
     $rows = [];
     foreach ($participants as $participant) {
         foreach ($judges as $judge) {
-            $judgeParticipantKey = (int)$judge['id'] . ':' . (int)$participant['id'];
-            $observation = observation_for($db, $eventId, (int)$judge['id'], (int)$participant['id']);
-            $review = judge_review_for($db, $eventId, (int)$judge['id'], (int)$participant['id']);
-            $judgeVotes = $votesByJudgeParticipant[$judgeParticipantKey] ?? [];
-            $judgeTotal = 0.0;
-
-            foreach ($judgeVotes as $vote) {
-                $judgeTotal += (float)$vote['score'];
-            }
+            $ficha = (int)$judge['id'] . ':' . (int)$participant['id'];
+            $observation = $observacoes[$ficha] ?? null;
+            $review = $pareceres[$ficha] ?? null;
+            // Uma vez por ficha, e não três vezes por linha como antes.
+            $assinatura = signature_payload_from_review($review);
 
             foreach ($criteria as $criterion) {
-                $criterionVote = null;
-                foreach ($judgeVotes as $vote) {
-                    if ((int)$vote['criterion_id'] === (int)$criterion['id']) {
-                        $criterionVote = $vote;
-                        break;
-                    }
-                }
+                $criterionVote = $votos[$ficha . ':' . (int)$criterion['id']] ?? null;
 
                 $rows[] = [
                     'participant' => $participant,
                     'judge' => $judge,
                     'criterion' => $criterion,
                     'vote' => $criterionVote,
-                    'judge_total' => $judgeTotal,
+                    'justificativa' => (string)($criterionVote['justificativa'] ?? ''),
+                    'judge_total' => $totalPorFicha[$ficha] ?? 0.0,
                     'participant_total' => $scoreByParticipant[(int)$participant['id']] ?? 0,
                     'observation' => $observation['text'] ?? '',
                     'observation_updated_at' => $observation['updated_at'] ?? '',
                     'signature' => $review['signature'] ?? '',
-                    'signature_mode' => signature_payload_from_review($review)['mode'],
-                    'signature_text' => signature_payload_from_review($review)['text'],
-                    'signature_touch' => signature_payload_from_review($review)['touch'],
+                    'signature_mode' => $assinatura['mode'],
+                    'signature_text' => $assinatura['text'],
+                    'signature_touch' => $assinatura['touch'],
                     'checklist_done' => (bool)($review['checklist_done'] ?? false),
                     'review_updated_at' => $review['updated_at'] ?? '',
                     'review' => $review,
+                    'ficha' => $ficha,
                 ];
             }
         }
@@ -2100,8 +2529,24 @@ function detailed_votes_for_event(array $db, int $eventId): array
             return $judgeCompare;
         }
 
-        return strcmp($a['criterion']['name'] ?? '', $b['criterion']['name'] ?? '');
+        /* Critério na ordem da FICHA, não em ordem alfabética: o relatório
+           precisa ser conferível linha a linha contra o papel que o jurado
+           preencheu. */
+        return ((int)($a['criterion']['display_order'] ?? 0) <=> (int)($b['criterion']['display_order'] ?? 0))
+            ?: ((int)($a['criterion']['id'] ?? 0) <=> (int)($b['criterion']['id'] ?? 0));
     });
+
+    /* Marca a primeira linha de cada ficha DEPOIS da ordenação — antes dela, a
+       ordem final ainda podia mudar qual critério vem primeiro.
+     *
+     * Assinatura e observação pertencem à ficha (jurado × participante), não a
+     * cada critério. Sem esta marca, a exportação repetia a mesma assinatura
+     * — uma imagem base64 inteira — em todas as linhas de critério da ficha. */
+    $fichaAnterior = null;
+    foreach ($rows as $i => $row) {
+        $rows[$i]['primeira_da_ficha'] = $row['ficha'] !== $fichaAnterior;
+        $fichaAnterior = $row['ficha'];
+    }
 
     return $rows;
 }
@@ -2516,25 +2961,83 @@ function handle_post(): void
             $gerada = true;
         }
 
+        /* Em quais eventos esta pessoa vai votar.
+         *
+         * O cadastro guarda uma linha por (jurado, evento) — é assim que o
+         * login reúne os acessos e o painel oferece a troca de evento. Marcar
+         * três eventos cria três linhas com o MESMO usuário e a MESMA senha:
+         * uma credencial só, três fichas. */
+        $escolhidos = array_values(array_unique(array_map('intval', (array)($_POST['event_ids'] ?? []))));
+
+        if ($escolhidos === []) {
+            $escolhidos = [(int)($_POST['event_id'] ?? 0)];
+        }
+
+        $escolhidos = array_values(array_filter(
+            $escolhidos,
+            static fn(int $id): bool => find_by_id($db['events'] ?? [], $id) !== null
+        ));
+
+        if ($escolhidos === []) {
+            flash('Selecione ao menos um evento para o jurado.', 'error');
+            redirect_to('dashboard', ['event_id' => active_event_id($db), 'section' => 'jurados']);
+        }
+
+        /* Usuário repetido no mesmo evento não pode: a chave única do banco é
+           (event_id, username), e o login casa por usuário E senha — dois
+           cadastros com senhas diferentes deixariam a pessoa entrando num
+           evento e não no outro, sem explicação na tela. */
+        $existentes = jurado_linhas_por_evento($db, $usuario);
+
+        foreach ($escolhidos as $evId) {
+            if (isset($existentes[$evId])) {
+                $ev = find_by_id($db['events'] ?? [], $evId);
+                flash('Já existe um jurado com o usuário "' . $usuario . '" em ' . (string)($ev['name'] ?? 'um dos eventos') . '.', 'error');
+                redirect_to('dashboard', ['event_id' => $evId, 'section' => 'jurados']);
+            }
+        }
+
+        /* Uma senha só para todas as linhas — ver o comentário do judge_login. */
+        $hash = password_hash($senha, PASSWORD_DEFAULT);
+
         $judgeId = next_id($db, 'judges');
-        $db['judges'][] = [
-            'id' => $judgeId,
-            'event_id' => $eventId,
-            'name' => $nome,
-            'username' => $usuario,
-            'phone' => $telefone,
-            'password' => password_hash($senha, PASSWORD_DEFAULT),
-            'created_at' => date('c'),
-        ];
+
+        /* A foto é da PESSOA, não do cadastro: gravada uma vez e apontada por
+           todas as linhas dela. O nome do arquivo usa o id da primeira. */
+        $foto = upload_judge_photo($judgeId);
+
+        /* Um next_id() por linha: ele avança o contador de $db, e reaproveitar
+           o número somando +1 na mão deixaria o contador atrás dos ids
+           gravados — o próximo cadastro nasceria com id repetido. */
+        $primeira = true;
+        foreach ($escolhidos as $evId) {
+            $db['judges'][] = [
+                'id' => $primeira ? $judgeId : next_id($db, 'judges'),
+                'event_id' => $evId,
+                'name' => $nome,
+                'username' => $usuario,
+                'phone' => $telefone,
+                'photo' => $foto,
+                'password' => $hash,
+                'status' => ($_POST['status'] ?? 'ativo') === 'inativo' ? 'inativo' : 'ativo',
+                'created_at' => date('c'),
+            ];
+            $primeira = false;
+        }
+
         db_write($db);
 
-        $aviso = 'Jurado cadastrado.';
+        $aviso = count($escolhidos) > 1
+            ? 'Jurado cadastrado em ' . count($escolhidos) . ' eventos, com a mesma senha nos dois.'
+            : 'Jurado cadastrado.';
+
         if ($gerada) {
             // A senha nao fica guardada em lugar nenhum de forma recuperavel.
             $aviso .= ' Senha gerada: ' . $senha . ' — anote agora, ela nao pode ser consultada depois.';
         }
 
         // Envio das credenciais, se houver telefone e integracao ligada.
+        $eventId = $escolhidos[0];
         $evento = find_by_id($db['events'] ?? [], $eventId);
         $envio = enviar_credenciais($nome, $usuario, $senha, $telefone, $evento, $eventId, $judgeId);
         if ($envio !== '') {
@@ -2550,46 +3053,192 @@ function handle_post(): void
         $eventId = (int)$_POST['event_id'];
         $judgeId = (int)$_POST['judge_id'];
         $password = (string)($_POST['password'] ?? '');
-        $updated = false;
 
-        foreach (($db['judges'] ?? []) as $index => $judge) {
-            if ((int)$judge['id'] !== $judgeId) {
-                continue;
+        $atual = null;
+        foreach (($db['judges'] ?? []) as $judge) {
+            if ((int)$judge['id'] === $judgeId) {
+                $atual = $judge;
+                break;
             }
-
-            $eventId = (int)$judge['event_id'];
-            $db['judges'][$index]['name'] = clean($_POST['name'] ?? '');
-            $db['judges'][$index]['username'] = strtolower(clean($_POST['username'] ?? ''));
-            $db['judges'][$index]['phone'] = clean($_POST['phone'] ?? ($judge['phone'] ?? ''));
-            if ($password !== '') {
-                $db['judges'][$index]['password'] = password_hash($password, PASSWORD_DEFAULT);
-            }
-            $updated = true;
-            break;
         }
 
-        if (!$updated) {
+        if (!$atual) {
             flash('Jurado não encontrado.', 'error');
             redirect_to('dashboard', ['event_id' => active_event_id($db), 'section' => 'jurados']);
         }
 
+        $eventId = (int)$atual['event_id'];
+
+        /* Editar um jurado edita a PESSOA, não só a linha aberta na tela.
+         *
+         * Quem julga três eventos tem três linhas. Antes, salvar aqui mudava
+         * uma só: trocar a senha pela tela de um evento deixava as outras com
+         * a senha velha, e como o login casa usuário E senha, a pessoa perdia
+         * o acesso aos demais eventos sem nenhum aviso. Agora as alterações
+         * valem para todas as linhas dela. */
+        $linhas = jurado_linhas_por_evento($db, (string)$atual['username']);
+
+        $nome = clean($_POST['name'] ?? '');
+        $usuario = strtolower(clean($_POST['username'] ?? ''));
+        $telefone = clean($_POST['phone'] ?? ($atual['phone'] ?? ''));
+
+        /* Sem o campo no formulário, mantém os eventos atuais: um formulário
+           antigo ou um POST incompleto não pode apagar acesso de ninguém. */
+        $escolhidos = isset($_POST['event_ids'])
+            ? array_values(array_unique(array_map('intval', (array)$_POST['event_ids'])))
+            : array_keys($linhas);
+
+        $escolhidos = array_values(array_filter(
+            $escolhidos,
+            static fn(int $id): bool => find_by_id($db['events'] ?? [], $id) !== null
+        ));
+
+        if ($escolhidos === []) {
+            flash('O jurado precisa de ao menos um evento. Para tirá-lo de tudo, use Excluir.', 'error');
+            redirect_to('dashboard', ['event_id' => $eventId, 'section' => 'jurados']);
+        }
+
+        /* O novo usuário não pode colidir com outra PESSOA já cadastrada nos
+           eventos escolhidos. */
+        if ($usuario !== mb_strtolower((string)$atual['username'])) {
+            $conflito = jurado_linhas_por_evento($db, $usuario);
+            foreach ($escolhidos as $evId) {
+                if (isset($conflito[$evId])) {
+                    flash('Já existe outro jurado com o usuário "' . $usuario . '" em um dos eventos escolhidos.', 'error');
+                    redirect_to('dashboard', ['event_id' => $evId, 'section' => 'jurados']);
+                }
+            }
+        }
+
+        $sair = array_diff(array_keys($linhas), $escolhidos);
+
+        /* Tirar o jurado de um evento onde ele JÁ VOTOU apagaria as notas
+           junto — a exclusão em cascata leva votos, observações e pareceres.
+           Recusa e diz onde, em vez de destruir apuração em silêncio. */
+        $comVoto = [];
+        foreach ($sair as $evId) {
+            $idLinha = (int)$linhas[$evId]['id'];
+            foreach ($db['votes'] ?? [] as $v) {
+                if ((int)$v['judge_id'] === $idLinha) {
+                    $ev = find_by_id($db['events'] ?? [], $evId);
+                    $comVoto[] = (string)($ev['name'] ?? ('evento ' . $evId));
+                    break;
+                }
+            }
+        }
+
+        if ($comVoto !== []) {
+            flash('Não dá para tirar o jurado de: ' . implode('; ', $comVoto)
+                . '. Ele já lançou notas nesses eventos, e removê-lo apagaria as notas junto.', 'error');
+            redirect_to('dashboard', ['event_id' => $eventId, 'section' => 'jurados']);
+        }
+
+        /* Foto: nova substitui, marcar "remover" limpa, nada mantém a atual. */
+        $fotoAtual = (string)($atual['photo'] ?? '');
+        $fotoNova = upload_judge_photo($judgeId);
+        $removerFoto = !empty($_POST['remove_photo']);
+
+        if ($fotoNova !== '') {
+            $foto = $fotoNova;
+        } elseif ($removerFoto) {
+            remover_foto_jurado($fotoAtual);
+            $foto = '';
+        } else {
+            $foto = $fotoAtual;
+        }
+
+        $hash = $password !== '' ? password_hash($password, PASSWORD_DEFAULT) : null;
+
+        // 1. Atualiza as linhas que continuam.
+        foreach (($db['judges'] ?? []) as $index => $judge) {
+            if (mb_strtolower((string)$judge['username']) !== mb_strtolower((string)$atual['username'])) {
+                continue;
+            }
+
+            if (in_array((int)$judge['event_id'], $sair, true)) {
+                continue;
+            }
+
+            $db['judges'][$index]['name'] = $nome;
+            $db['judges'][$index]['username'] = $usuario;
+            $db['judges'][$index]['phone'] = $telefone;
+            $db['judges'][$index]['photo'] = $foto;
+            $db['judges'][$index]['status'] = ($_POST['status'] ?? 'ativo') === 'inativo' ? 'inativo' : 'ativo';
+
+            if ($hash !== null) {
+                $db['judges'][$index]['password'] = $hash;
+            }
+        }
+
+        // 2. Remove as linhas dos eventos desmarcados (nenhuma tem voto).
+        if ($sair !== []) {
+            $idsSair = [];
+            foreach ($sair as $evId) {
+                $idsSair[] = (int)$linhas[$evId]['id'];
+            }
+
+            $db['judges'] = array_values(array_filter(
+                $db['judges'] ?? [],
+                static fn(array $j): bool => !in_array((int)$j['id'], $idsSair, true)
+            ));
+        }
+
+        // 3. Cria as linhas dos eventos recém-marcados.
+        $entrar = array_diff($escolhidos, array_keys($linhas));
+
+        if ($entrar !== []) {
+            $senhaParaNovas = $hash ?? (string)$atual['password'];
+
+            foreach ($entrar as $evId) {
+                $db['judges'][] = [
+                    'id' => next_id($db, 'judges'),
+                    'event_id' => $evId,
+                    'name' => $nome,
+                    'username' => $usuario,
+                    'phone' => $telefone,
+                    'photo' => $foto,
+                    'password' => $senhaParaNovas,
+                    'created_at' => date('c'),
+                ];
+            }
+        }
+
         db_write($db);
-        flash('Jurado atualizado.');
-        redirect_to('dashboard', ['event_id' => $eventId, 'section' => 'jurados']);
+
+        $aviso = 'Jurado atualizado';
+        if ($entrar !== []) {
+            $aviso .= ', incluído em ' . count($entrar) . ' evento(s)';
+        }
+        if ($sair !== []) {
+            $aviso .= ', retirado de ' . count($sair) . ' evento(s)';
+        }
+
+        flash($aviso . '.');
+        redirect_to('dashboard', ['event_id' => in_array($eventId, $escolhidos, true) ? $eventId : $escolhidos[0], 'section' => 'jurados']);
     }
 
     if ($action === 'delete_judge') {
         require_admin();
         $eventId = (int)$_POST['event_id'];
         $judgeId = (int)$_POST['judge_id'];
+        $excluido = null;
         foreach ($db['judges'] ?? [] as $judge) {
             if ((int)$judge['id'] === $judgeId) {
                 $eventId = (int)$judge['event_id'];
+                $excluido = $judge;
                 break;
             }
         }
 
         $db['judges'] = array_values(array_filter($db['judges'] ?? [], fn($judge) => (int)$judge['id'] !== $judgeId));
+
+        /* A foto é da pessoa e é apontada por todas as linhas dela. Só sai do
+           disco quando a última linha some — senão, excluir o cadastro de um
+           evento deixaria os outros com a imagem quebrada. */
+        if ($excluido && ($excluido['photo'] ?? '') !== ''
+            && jurado_linhas_por_evento($db, (string)$excluido['username']) === []) {
+            remover_foto_jurado((string)$excluido['photo']);
+        }
         $db['votes'] = array_values(array_filter($db['votes'] ?? [], fn($vote) => (int)$vote['judge_id'] !== $judgeId));
         $db['observations'] = array_values(array_filter($db['observations'] ?? [], fn($observation) => (int)$observation['judge_id'] !== $judgeId));
         $db['judge_reviews'] = array_values(array_filter($db['judge_reviews'] ?? [], fn($review) => (int)$review['judge_id'] !== $judgeId));
@@ -3140,8 +3789,23 @@ function handle_post(): void
             }
 
             $senha = gerar_senha();
-            $db['judges'][$i]['password'] = password_hash($senha, PASSWORD_DEFAULT);
+            $hash = password_hash($senha, PASSWORD_DEFAULT);
             $eventId = (int)$j['event_id'];
+
+            /* A senha é da PESSOA, não desta linha.
+             *
+             * Quem julga mais de um evento tem uma linha por evento, e o login
+             * casa usuário E senha. Trocar só a linha aberta na tela deixaria
+             * as demais com a senha antiga — e a pessoa perderia o acesso
+             * àqueles eventos sem nada explicar o motivo. */
+            $alcancadas = 0;
+            foreach (($db['judges'] ?? []) as $k => $outro) {
+                if (mb_strtolower((string)$outro['username']) === mb_strtolower((string)$j['username'])) {
+                    $db['judges'][$k]['password'] = $hash;
+                    $alcancadas++;
+                }
+            }
+
             db_write($db);
 
             $evento = find_by_id($db['events'] ?? [], $eventId);
@@ -3155,7 +3819,8 @@ function handle_post(): void
                 $judgeId
             );
 
-            flash('Nova senha de ' . $j['name'] . ': ' . $senha . ' — a anterior deixou de valer. ' . $envio);
+            flash('Nova senha de ' . $j['name'] . ': ' . $senha . ' — a anterior deixou de valer'
+                . ($alcancadas > 1 ? ', nos ' . $alcancadas . ' eventos em que ele julga' : '') . '. ' . $envio);
             redirect_to('dashboard', ['event_id' => $eventId, 'section' => 'usuarios']);
         }
 
@@ -3612,6 +4277,69 @@ function handle_post(): void
         exit;
     }
 
+    /* Reabrir a própria ficha.
+     *
+     * "Finalizar Avaliações" fica ao lado da navegação entre participantes, no
+     * alto da tela, e num tablet é tocado sem querer. Antes disso não havia
+     * volta: a ficha travava e só um administrador com acesso ao banco
+     * resolvia. Agora o jurado desfaz sozinho. */
+    if ($action === 'reabrir_avaliacao') {
+        require_judge();
+        $eventId = (int)$_SESSION['judge_event_id'];
+        $judgeId = (int)$_SESSION['judge_id'];
+
+        resultado_desmarcar_finalizado($eventId, $judgeId, (string)($_SESSION['judge_name'] ?? ''));
+
+        /* Finalizar zera o prazo para fechar a ficha na hora. Reabrir sem
+           devolver tempo deixaria a tela editável e o salvamento recusado —
+           pior que continuar travado, porque parece que funciona. */
+        unset($_SESSION['judge_finished'][$eventId]);
+        $_SESSION['judge_deadlines'][$eventId] =
+            time() + evaluation_seconds_from_event(find_by_id($db['events'] ?? [], $eventId));
+
+        $aviso = 'Avaliações reabertas. Corrija o que precisar e finalize de novo quando terminar.';
+
+        if (resultado_ja_enviado($eventId) !== null) {
+            $aviso .= ' Atenção: o resultado deste evento JÁ FOI ENVIADO à coordenação.'
+                . ' Avise a organização para reenviar depois da correção, senão o que foi'
+                . ' anunciado continua valendo o valor antigo.';
+        }
+
+        flash($aviso);
+        redirect_to('judge-panel', ['section' => 'votacao']);
+    }
+
+    /* Reabrir a ficha de um jurado, pela organização.
+     *
+     * Existe para o caso em que o jurado já saiu, ou entregou com erro e a
+     * coordenação precisa liberar a correção. */
+    if ($action === 'reabrir_jurado') {
+        require_admin();
+        $eventId = (int)($_POST['event_id'] ?? 0);
+        $judgeId = (int)($_POST['judge_id'] ?? 0);
+        $jurado = find_by_id($db['judges'] ?? [], $judgeId);
+
+        if (!$jurado || (int)$jurado['event_id'] !== $eventId) {
+            flash('Jurado não encontrado neste evento.', 'error');
+            redirect_to('dashboard', ['event_id' => $eventId, 'section' => 'acompanhamento']);
+        }
+
+        resultado_desmarcar_finalizado(
+            $eventId,
+            $judgeId,
+            'administrador ' . (string)($_SESSION['admin_name'] ?? '')
+        );
+
+        $aviso = 'Ficha de ' . (string)$jurado['name'] . ' reaberta — ele já pode editar as notas.';
+
+        if (resultado_ja_enviado($eventId) !== null) {
+            $aviso .= ' O resultado deste evento já havia sido enviado: reenvie depois da correção.';
+        }
+
+        flash($aviso);
+        redirect_to('dashboard', ['event_id' => $eventId, 'section' => 'acompanhamento']);
+    }
+
     /* -----------------------------------------------------------------------
      * Planilha SER SESC
      * -------------------------------------------------------------------- */
@@ -3907,6 +4635,29 @@ function perfil_iniciais(string $nome): string
 }
 
 /**
+ * Círculo de identificação do cabeçalho: a foto quando existe, as iniciais
+ * quando não.
+ *
+ * Mesma classe e mesmo tamanho nos dois casos — o cabeçalho não pode mudar de
+ * altura conforme a pessoa tenha ou não foto cadastrada.
+ */
+function avatar_html(string $nome, string $foto = ''): string
+{
+    if ($foto === '' || !is_file(__DIR__ . '/' . $foto)) {
+        return '<span class="avatar" aria-hidden="true">' . h(perfil_iniciais($nome)) . '</span>';
+    }
+
+    /* A data de modificação entra no endereço para o navegador buscar a imagem
+       nova depois de uma troca de foto. Sem isso o tablet do jurado seguiria
+       mostrando a anterior, que é justamente onde o cache atrapalha mais. */
+    $versao = @filemtime(__DIR__ . '/' . $foto) ?: 0;
+
+    return '<span class="avatar avatar-foto" aria-hidden="true">'
+        . '<img src="' . h($foto) . '?v=' . $versao . '" alt="">'
+        . '</span>';
+}
+
+/**
  * Um item do menu lateral.
  *
  * Os rotulos usam letra maiuscula apenas na inicial da frase — "Painel
@@ -4002,6 +4753,8 @@ function render_header(string $title): void
         <link rel="stylesheet" href="<?= asset('public/assets/css/app.css') ?>">
         <!-- Camada de refinamento: carregada depois, sobrepoe o necessario. -->
         <link rel="stylesheet" href="<?= asset('public/assets/css/ui.css') ?>">
+        <!-- Teclado de nota do tablet. Isolado para poder sair sem tocar no resto. -->
+        <link rel="stylesheet" href="<?= asset('public/assets/css/teclado-nota.css') ?>">
     </head>
     <body class="<?= h($bodyClass) ?>">
         <header class="topbar">
@@ -4037,6 +4790,8 @@ function render_footer(): void
         <script src="<?= asset('public/assets/js/app.js') ?>"></script>
         <!-- Menu recolhivel / gaveta. Carregado depois do app.js. -->
         <script src="<?= asset('public/assets/js/ui.js') ?>"></script>
+        <!-- Teclado de nota: so entra em tela de toque; ver o cabecalho do arquivo. -->
+        <script src="<?= asset('public/assets/js/teclado-nota.js') ?>"></script>
     </body>
     </html>
     <?php
@@ -5416,9 +6171,41 @@ function render_dashboard(): void
     $section = $_GET['section'] ?? 'painel';
     $event = $eventId ? find_by_id($db['events'] ?? [], $eventId) : null;
     $events = event_options($db);
-    $criteria = $eventId ? items_for_event($db['criteria'] ?? [], $eventId) : [];
+    $criteria = $eventId ? ordenar_criterios(items_for_event($db['criteria'] ?? [], $eventId)) : [];
     $judges = $eventId ? items_for_event($db['judges'] ?? [], $eventId) : [];
-    $participants = $eventId ? items_for_event($db['participants'] ?? [], $eventId) : [];
+    $participants = $eventId ? ordenar_participantes(items_for_event($db['participants'] ?? [], $eventId)) : [];
+
+    /* Download do relatório em PDF.
+     *
+     * Antes de qualquer HTML, pelo mesmo motivo do download da planilha: o
+     * arquivo manda os próprios cabeçalhos, e o buffer do filtro de CSRF
+     * precisa ser DESCARTADO inteiro — o HTML já produzido entraria dentro do
+     * PDF e o corromperia. */
+    if ($section === 'criar-relatorio' && ($_GET['formato'] ?? '') === 'pdf') {
+        $f = relatorio_filtros($criteria, $participants, $_GET);
+
+        $faltaEscolha = ($f['tipo'] === 'quesito' && !$f['quesitos'])
+            || ($f['tipo'] === 'participante' && !$f['alvos'])
+            || (!$event && $f['tipo'] !== 'consolidado');
+
+        if ($faltaEscolha) {
+            flash('Escolha o que entra no relatório antes de exportar.', 'error');
+            redirect_to('dashboard', ['section' => 'criar-relatorio', 'event_id' => $eventId]);
+        }
+
+        $arquivo = relatorio_pdf_montar($db, $event, $f['tipo'], $f['quesitos'], $f['alvos']);
+
+        while (ob_get_level() > 0) {
+            ob_end_clean();
+        }
+
+        header('Content-Type: application/pdf');
+        header('Content-Disposition: attachment; filename="' . $arquivo['nome'] . '"');
+        header('Content-Length: ' . (string)strlen($arquivo['conteudo']));
+        header('Cache-Control: no-store');
+        echo $arquivo['conteudo'];
+        exit;
+    }
     $ranking = $eventId ? ranking_for_event($db, $eventId) : [];
     $voteCount = $eventId ? event_vote_count($db, $eventId) : 0;
     $judgeProgress = $eventId ? judge_progress_for_event($db, $eventId) : [];
@@ -5451,6 +6238,7 @@ function render_dashboard(): void
         ['apuracao',      'apuracao',     'Apuração'],
         ['relatorios',    'relatorio',    'Relatórios'],
         ['placar',        'placar',       'Placar em tempo real'],
+        ['criar-relatorio', 'relatorio',  'Criar relatório'],
         ['exportar',      'exportar',     'Exportar notas'],
         ['usuarios',      'pessoa',       'Usuários e senhas'],
         ['whatsapp',      'whatsapp',     'WhatsApp'],
@@ -5851,10 +6639,14 @@ function render_dashboard(): void
                         <?php endif; ?>
                         <?php foreach ($judges as $judge): ?>
                             <tr>
-                                <td data-label="Nome"><?= h($judge['name']) ?></td>
+                                <td data-label="Nome"><span class="participant-name-cell"><?= judge_photo_html($judge, 'thumb') ?><?= h($judge['name']) ?></span></td>
                                 <td data-label="E-mail"><?= h($judge['username']) ?></td>
                                 <td data-label="Evento"><?= h($event['name']) ?></td>
-                                <td data-label="Status"><span class="status-pill ativo">Ativo</span></td>
+                                <?php /* A situação real, não um selo fixo: mostrava sempre
+                                         "Ativo", então não havia como ver na lista quem
+                                         estava desativado. */ ?>
+                                <?php $inativo = ($judge['status'] ?? 'ativo') === 'inativo'; ?>
+                                <td data-label="Status"><span class="status-pill <?= $inativo ? 'pendente' : 'ativo' ?>"><?= $inativo ? 'Inativo' : 'Ativo' ?></span></td>
                                 <td data-label="Ações">
                                     <div class="table-actions">
                                         <a class="icon-action" href="?page=dashboard&section=jurados&event_id=<?= $eventId ?>&judge_edit=<?= (int)$judge['id'] ?>#novo-jurado">Editar</a>
@@ -5872,7 +6664,21 @@ function render_dashboard(): void
                     </table>
                 </div>
             </div>
-            <form id="novo-jurado" class="panel form-stack compact-form" method="post">
+            <?php
+            /* Em quais eventos este jurado já julga — usado para marcar as
+               caixas na edição. Cadastro novo começa com o evento do painel. */
+            $eventosDoJurado = $judgeToEdit
+                ? array_keys(jurado_linhas_por_evento($db, (string)$judgeToEdit['username']))
+                : [$eventId];
+
+            /* Arquivado não entra: é festival encerrado, e oferecer a caixa
+               convidaria a mexer em apuração fechada. */
+            $eventosOferecidos = array_values(array_filter(
+                $db['events'] ?? [],
+                static fn(array $e): bool => !evento_arquivado($e)
+            ));
+            ?>
+            <form id="novo-jurado" class="panel form-stack compact-form" method="post" enctype="multipart/form-data">
                 <h2><?= $judgeToEdit ? 'Editar jurado' : 'Novo jurado' ?></h2>
                 <input type="hidden" name="action" value="<?= $judgeToEdit ? 'update_judge' : 'create_judge' ?>">
                 <input type="hidden" name="event_id" value="<?= $eventId ?>">
@@ -5881,7 +6687,71 @@ function render_dashboard(): void
                 <?php endif; ?>
                 <label>Nome <input required name="name" value="<?= h($judgeToEdit['name'] ?? '') ?>"></label>
                 <label>Usuário <input required name="username" value="<?= h($judgeToEdit['username'] ?? '') ?>"></label>
+
+                <?php /* O backend sempre leu este campo; o input nunca existiu na
+                         tela, e por isso nenhum jurado tinha telefone — o envio de
+                         credenciais por WhatsApp nunca tinha para onde ir. */ ?>
+                <label>Telefone (WhatsApp)
+                    <input name="phone" type="tel" inputmode="tel"
+                           value="<?= h($judgeToEdit['phone'] ?? '') ?>"
+                           placeholder="(92) 98888-7777">
+                    <small class="dica">Usado para enviar usuário e senha. Em branco, as credenciais só aparecem na tela.</small>
+                </label>
+
                 <label>Senha <input name="password" type="password" <?= $judgeToEdit ? '' : 'required' ?> placeholder="<?= $judgeToEdit ? 'Deixe em branco para manter a senha atual' : '' ?>"></label>
+
+                <?php /* Situação. Inativo é como um cadastro de teste sai de cena:
+                         some dos relatórios, não entra na conta de quem falta
+                         finalizar e não consegue entrar no painel — sem precisar
+                         excluir, que levaria junto o histórico. */ ?>
+                <label>Situação
+                    <select name="status">
+                        <option value="ativo" <?= ($judgeToEdit['status'] ?? 'ativo') !== 'inativo' ? 'selected' : '' ?>>Ativo — avalia e aparece nos relatórios</option>
+                        <option value="inativo" <?= ($judgeToEdit['status'] ?? '') === 'inativo' ? 'selected' : '' ?>>Inativo — não entra e some dos relatórios</option>
+                    </select>
+                </label>
+
+                <?php /* Foto: mesma pasta e mesmas regras da foto do participante —
+                         o tipo vem do cabeçalho binário, não do nome do arquivo. */ ?>
+                <div class="campo-foto-jurado">
+                    <span class="rotulo-foto">Foto</span>
+                    <div class="foto-jurado-linha">
+                        <?= judge_photo_html($judgeToEdit ?? ['name' => '?'], 'large') ?>
+                        <div>
+                            <input name="photo" type="file" accept="image/jpeg,image/png,image/webp">
+                            <small class="dica">JPG, PNG ou WEBP, até 5 MB. Em branco, mantém a atual.</small>
+                            <?php if (($judgeToEdit['photo'] ?? '') !== ''): ?>
+                                <label class="remover-foto">
+                                    <input type="checkbox" name="remove_photo" value="1"> Remover a foto atual
+                                </label>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                </div>
+
+                <?php /* Em quais eventos a pessoa vota.
+                         Uma linha de cadastro por evento marcado, todas com o mesmo
+                         usuário e a mesma senha — o login reúne os acessos e o
+                         jurado troca de evento dentro do painel. */ ?>
+                <fieldset class="eventos-do-jurado">
+                    <legend>Eventos em que este jurado vai votar</legend>
+                    <p class="dica">Marque quantos precisar. A pessoa entra uma vez só, com o mesmo usuário e senha, e escolhe o evento dentro do painel.</p>
+                    <?php foreach ($eventosOferecidos as $ev): ?>
+                        <?php $marcado = in_array((int)$ev['id'], $eventosDoJurado, true); ?>
+                        <label class="evento-opcao">
+                            <input type="checkbox" name="event_ids[]" value="<?= (int)$ev['id'] ?>" <?= $marcado ? 'checked' : '' ?>>
+                            <span><?= h($ev['name']) ?>
+                                <?php if (($ev['status'] ?? '') === 'rascunho'): ?>
+                                    <small>(rascunho — o jurado ainda não vê)</small>
+                                <?php endif; ?>
+                            </span>
+                        </label>
+                    <?php endforeach; ?>
+                    <?php if ($judgeToEdit): ?>
+                        <p class="dica">Desmarcar um evento onde ele já lançou notas é recusado: as notas seriam apagadas junto.</p>
+                    <?php endif; ?>
+                </fieldset>
+
                 <div class="form-actions">
                     <?php if ($judgeToEdit): ?>
                         <a class="button ghost" href="?page=dashboard&section=jurados&event_id=<?= $eventId ?>#novo-jurado">Cancelar edição</a>
@@ -6266,6 +7136,332 @@ function render_dashboard(): void
         </section>
     <?php endif; ?>
 
+    <?php if ($event && $section === 'criar-relatorio'): ?>
+        <?php
+        /* Módulo de relatórios.
+         *
+         * Um seletor de TIPO e filtros que só fazem sentido para aquele tipo.
+         * Tudo por GET, de propósito: o relatório gerado vira um endereço que
+         * a coordenação guarda nos favoritos ou manda para outra pessoa — o
+         * que um formulário POST não permitiria. */
+        $f = relatorio_filtros($criteria, $participants, $_GET);
+        $tipo = $f['tipo'];
+        $criterioPedido = $f['criterio'];
+        $participantePedido = $f['participante'];
+        $busca = $f['busca'];
+        $quesitos = $f['quesitos'];
+        $participantesFiltrados = $f['participantes_filtrados'];
+        $alvos = $f['alvos'];
+
+        /* O endereço do PDF é o mesmo da tela, com formato=pdf a mais — assim
+           o arquivo baixado é exatamente o relatório que está sendo visto. */
+        $urlPdf = '?' . http_build_query(array_merge(
+            array_filter([
+                'page'         => 'dashboard',
+                'section'      => 'criar-relatorio',
+                'event_id'     => $eventId,
+                'tipo'         => $tipo,
+                'criterio'     => $criterioPedido,
+                'participante' => $participantePedido,
+                'busca'        => $busca,
+            ], static fn($v): bool => $v !== '' && $v !== null),
+            ['formato' => 'pdf']
+        ));
+
+        $temConteudo = ($tipo === 'quesito' && $quesitos)
+            || ($tipo === 'participante' && $alvos)
+            || $tipo === 'evento'
+            || $tipo === 'consolidado';
+
+        $titulos = [
+            'quesito'     => 'Ranking por quesito',
+            'participante'=> 'Ficha individual',
+            'evento'      => 'Relatório geral do evento',
+            'consolidado' => 'Consolidado de todos os eventos',
+        ];
+        ?>
+        <section class="management-page export-page relatorio-modulo">
+            <div class="management-head no-print">
+                <h2>Criar relatório</h2>
+                <div class="management-actions">
+                    <?php if ($temConteudo): ?>
+                        <?php /* Baixa direto: o servidor monta o PDF e manda o arquivo.
+                                 A caixa de impressão do navegador ainda exige escolher
+                                 "Salvar como PDF", conferir orientação e desligar
+                                 cabeçalho e rodapé — e o resultado muda conforme quem
+                                 clicou. O botão de imprimir fica como segunda opção,
+                                 para quem quiser mandar direto à impressora. */ ?>
+                        <a class="button primary" href="<?= h($urlPdf) ?>">Exportar PDF</a>
+                        <button class="button" type="button" onclick="window.print()">Imprimir</button>
+                    <?php endif; ?>
+                </div>
+            </div>
+
+            <form class="panel form-stack compact-form no-print" method="get">
+                <input type="hidden" name="page" value="dashboard">
+                <input type="hidden" name="section" value="criar-relatorio">
+                <input type="hidden" name="event_id" value="<?= $eventId ?>">
+
+                <div class="filtros-relatorio">
+                    <label>Tipo de relatório
+                        <select name="tipo">
+                            <option value="quesito" <?= $tipo === 'quesito' ? 'selected' : '' ?>>Ranking por quesito</option>
+                            <option value="participante" <?= $tipo === 'participante' ? 'selected' : '' ?>>Ficha individual (por quadrilha)</option>
+                            <option value="evento" <?= $tipo === 'evento' ? 'selected' : '' ?>>Geral deste evento</option>
+                            <option value="consolidado" <?= $tipo === 'consolidado' ? 'selected' : '' ?>>Consolidado de todos os eventos</option>
+                        </select>
+                    </label>
+
+                    <label>Quesito <small>(ranking por quesito)</small>
+                        <select name="criterio">
+                            <option value="">— escolha —</option>
+                            <option value="todos" <?= $criterioPedido === 'todos' ? 'selected' : '' ?>>Todos os quesitos</option>
+                            <?php foreach ($criteria as $c): ?>
+                                <option value="<?= (int)$c['id'] ?>" <?= (string)(int)$c['id'] === $criterioPedido ? 'selected' : '' ?>><?= h($c['name']) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </label>
+
+                    <label>Quadrilha / participante <small>(ficha individual)</small>
+                        <select name="participante">
+                            <option value="">— escolha —</option>
+                            <option value="todos" <?= $participantePedido === 'todos' ? 'selected' : '' ?>>Todas (uma ficha por página)</option>
+                            <?php foreach ($participantesFiltrados as $p): ?>
+                                <option value="<?= (int)$p['id'] ?>" <?= (string)(int)$p['id'] === $participantePedido ? 'selected' : '' ?>><?= h($p['name']) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </label>
+
+                    <label>Buscar por nome
+                        <input name="busca" type="search" value="<?= h($busca) ?>" placeholder="parte do nome da quadrilha">
+                        <small class="dica">Filtra a lista acima. <?= count($participantesFiltrados) ?> de <?= count($participants) ?> participante(s).</small>
+                    </label>
+                </div>
+
+                <div class="form-actions">
+                    <button class="button primary" type="submit">Gerar relatório</button>
+                    <a class="button ghost" href="?page=dashboard&section=criar-relatorio&event_id=<?= $eventId ?>">Limpar filtros</a>
+                </div>
+            </form>
+
+            <?php if ($tipo === 'quesito' && $criterioPedido !== '' && !$quesitos): ?>
+                <p class="dica no-print">Quesito não encontrado neste evento.</p>
+            <?php endif; ?>
+            <?php if ($tipo === 'participante' && $participantePedido !== '' && !$alvos): ?>
+                <p class="dica no-print">Nenhum participante corresponde à seleção<?= $busca !== '' ? ' com a busca "' . h($busca) . '"' : '' ?>.</p>
+            <?php endif; ?>
+
+            <?php if ($temConteudo): ?>
+                <div class="panel pdf-sheet">
+                    <div class="pdf-head">
+                        <div class="sesc-logo small"><span>Sesc</span></div>
+                        <div>
+                            <h1><?= h($titulos[$tipo] ?? 'Relatório') ?></h1>
+                            <p>
+                                <?= $tipo === 'consolidado' ? 'Todos os eventos' : h($event['name']) ?>
+                                <?= $tipo !== 'consolidado' && !empty($event['date']) ? ' · ' . h($event['date']) : '' ?>
+                                · emitido em <?= h(date('d/m/Y H:i')) ?>
+                            </p>
+                        </div>
+                    </div>
+
+                    <?php /* ---------- RANKING POR QUESITO ---------- */ ?>
+                    <?php if ($tipo === 'quesito'): ?>
+                        <?php foreach ($quesitos as $c): ?>
+                            <?php $linhas = ranking_por_criterio($db, $eventId, (int)$c['id']); ?>
+                            <section class="quesito-bloco">
+                                <h2><?= h($c['name']) ?></h2>
+                                <div class="table-wrap">
+                                    <table class="admin-table responsive-cards">
+                                        <thead><tr><th>Posição</th><th>Participante</th><th>Média</th><th>Soma</th><th>Jurados</th></tr></thead>
+                                        <tbody>
+                                        <?php foreach ($linhas as $l): ?>
+                                            <tr>
+                                                <td data-label="Posição"><?= (int)$l['posicao'] ?>º</td>
+                                                <td data-label="Participante"><?= h($l['participant']['name']) ?></td>
+                                                <td data-label="Média"><?= $l['jurados'] > 0 ? number_format((float)$l['media'], 2, ',', '.') : '-' ?></td>
+                                                <td data-label="Soma"><?= $l['jurados'] > 0 ? number_format((float)$l['soma'], 2, ',', '.') : '-' ?></td>
+                                                <td data-label="Jurados"><?= (int)$l['jurados'] ?></td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                        <?php if (!$linhas): ?>
+                                            <tr><td colspan="5">Nenhum participante cadastrado neste evento.</td></tr>
+                                        <?php endif; ?>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </section>
+                        <?php endforeach; ?>
+                        <p class="dica">
+                            Classificação pela <strong>média dos jurados</strong>; somar favoreceria quem
+                            foi avaliado por mais gente. A soma fica ao lado para conferência com a folha
+                            de papel. Penalidades não entram no quesito: descontam da nota geral do grupo.
+                        </p>
+
+                    <?php /* ---------- FICHA INDIVIDUAL ---------- */ ?>
+                    <?php elseif ($tipo === 'participante'): ?>
+                        <?php $rankingEvento = ranking_for_event($db, $eventId); ?>
+                        <?php foreach ($alvos as $p): ?>
+                            <?php
+                            $ficha = relatorio_participante($db, $eventId, (int)$p['id']);
+                            $posicao = 0;
+                            $linhaRanking = null;
+                            foreach ($rankingEvento as $i => $r) {
+                                if ((int)$r['participant']['id'] === (int)$p['id']) {
+                                    $posicao = $i + 1;
+                                    $linhaRanking = $r;
+                                    break;
+                                }
+                            }
+                            ?>
+                            <section class="ficha-bloco">
+                                <h2><?= h($p['name']) ?></h2>
+                                <p class="ficha-resumo">
+                                    Ordem de apresentação <strong><?= str_pad((string)(int)($p['order'] ?? 0), 2, '0', STR_PAD_LEFT) ?></strong>
+                                    <?php if ($linhaRanking): ?>
+                                        · Nota final <strong><?= number_format((float)$linhaRanking['score'], 2, ',', '.') ?></strong>
+                                        · <?= $posicao ?>º lugar geral
+                                        <?php if ((float)$linhaRanking['penalidade'] > 0): ?>
+                                            · <span class="erro-texto">penalidade de <?= number_format((float)$linhaRanking['penalidade'], 2, ',', '.') ?></span>
+                                            (bruta <?= number_format((float)$linhaRanking['score_bruto'], 2, ',', '.') ?>)
+                                        <?php endif; ?>
+                                    <?php endif; ?>
+                                </p>
+
+                                <div class="table-wrap">
+                                    <table class="admin-table">
+                                        <thead>
+                                            <tr>
+                                                <th>Quesito</th>
+                                                <?php foreach ($ficha['jurados'] as $j): ?><th><?= h($j['name']) ?></th><?php endforeach; ?>
+                                                <th>Média</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                        <?php foreach ($ficha['criterios'] as $c): ?>
+                                            <?php
+                                            $doQuesito = $ficha['notas'][(int)$c['id']] ?? [];
+                                            $media = $doQuesito ? array_sum(array_map(static fn($v) => (float)$v['score'], $doQuesito)) / count($doQuesito) : null;
+                                            ?>
+                                            <tr>
+                                                <td><strong><?= h($c['name']) ?></strong></td>
+                                                <?php foreach ($ficha['jurados'] as $j): ?>
+                                                    <?php $voto = $doQuesito[(int)$j['id']] ?? null; ?>
+                                                    <td>
+                                                        <?= $voto ? number_format((float)$voto['score'], 1, ',', '.') : '-' ?>
+                                                        <?php if ($voto && ($voto['justificativa'] ?? '') !== ''): ?>
+                                                            <small class="justificativa-celula"><?= h((string)$voto['justificativa']) ?></small>
+                                                        <?php endif; ?>
+                                                    </td>
+                                                <?php endforeach; ?>
+                                                <td><strong><?= $media !== null ? number_format($media, 2, ',', '.') : '-' ?></strong></td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                        </tbody>
+                                    </table>
+                                </div>
+
+                                <?php if ($ficha['penalidades']['itens'] ?? []): ?>
+                                    <h3>Penalidades</h3>
+                                    <ul class="lista-penalidades">
+                                        <?php foreach ($ficha['penalidades']['itens'] as $pen): ?>
+                                            <li>
+                                                <strong><?= h((string)$pen['nome']) ?></strong>
+                                                −<?= number_format((float)$pen['valor'], 2, ',', '.') ?>
+                                                <?= ($pen['motivo'] ?? '') !== '' ? '— ' . h((string)$pen['motivo']) : '' ?>
+                                                <small>(<?= h((string)($pen['aplicada_por'] ?? '')) ?>)</small>
+                                            </li>
+                                        <?php endforeach; ?>
+                                    </ul>
+                                <?php endif; ?>
+
+                                <h3>Observações e assinatura dos jurados</h3>
+                                <div class="table-wrap">
+                                    <table class="admin-table">
+                                        <thead><tr><th>Jurado</th><th>Observação</th><th>Assinatura</th></tr></thead>
+                                        <tbody>
+                                        <?php foreach ($ficha['jurados'] as $j): ?>
+                                            <tr>
+                                                <td><?= h($j['name']) ?></td>
+                                                <td><?= ($ficha['observacoes'][(int)$j['id']] ?? '') !== '' ? h($ficha['observacoes'][(int)$j['id']]) : '-' ?></td>
+                                                <td><?= render_signature_markup($ficha['pareceres'][(int)$j['id']] ?? null) ?></td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </section>
+                        <?php endforeach; ?>
+
+                    <?php /* ---------- GERAL DO EVENTO ---------- */ ?>
+                    <?php elseif ($tipo === 'evento'): ?>
+                        <?php $andamentoEv = resultado_andamento($db, $eventId); ?>
+                        <p class="ficha-resumo">
+                            <?= count($participants) ?> participante(s) · <?= count($judges) ?> jurado(s)
+                            · <?= count($criteria) ?> quesito(s)
+                            · <?= (int)$andamentoEv['finalizados'] ?> de <?= (int)$andamentoEv['total'] ?> ficha(s) entregue(s)
+                        </p>
+
+                        <h2>Classificação geral</h2>
+                        <?= render_total_scores_table($totalScoreRows) ?>
+
+                        <h2>Campeão de cada quesito</h2>
+                        <div class="table-wrap">
+                            <table class="admin-table">
+                                <thead><tr><th>Quesito</th><th>1º lugar</th><th>Média</th></tr></thead>
+                                <tbody>
+                                <?php foreach ($criteria as $c): ?>
+                                    <?php $topo = ranking_por_criterio($db, $eventId, (int)$c['id'])[0] ?? null; ?>
+                                    <tr>
+                                        <td><strong><?= h($c['name']) ?></strong></td>
+                                        <td><?= $topo && $topo['jurados'] > 0 ? h($topo['participant']['name']) : '—' ?></td>
+                                        <td><?= $topo && $topo['jurados'] > 0 ? number_format((float)$topo['media'], 2, ',', '.') : '—' ?></td>
+                                    </tr>
+                                <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+
+                    <?php /* ---------- CONSOLIDADO DE TODOS OS EVENTOS ---------- */ ?>
+                    <?php elseif ($tipo === 'consolidado'): ?>
+                        <div class="table-wrap">
+                            <table class="admin-table">
+                                <thead>
+                                    <tr><th>Evento</th><th>Data</th><th>Situação</th><th>Particip.</th><th>Jurados</th><th>Quesitos</th><th>Fichas entregues</th><th>1º lugar</th><th>Nota</th></tr>
+                                </thead>
+                                <tbody>
+                                <?php foreach (relatorio_eventos_consolidado($db) as $ev): ?>
+                                    <?php
+                                    $evId = (int)$ev['id'];
+                                    $rk = ranking_for_event($db, $evId);
+                                    $primeiro = $rk[0] ?? null;
+                                    $and = resultado_andamento($db, $evId);
+                                    ?>
+                                    <tr>
+                                        <td><strong><?= h($ev['name']) ?></strong></td>
+                                        <td><?= h((string)($ev['date'] ?? '')) ?></td>
+                                        <td><?= h((string)($ev['status'] ?? '')) ?></td>
+                                        <td><?= count(items_for_event($db['participants'] ?? [], $evId)) ?></td>
+                                        <td><?= count(items_for_event($db['judges'] ?? [], $evId)) ?></td>
+                                        <td><?= count(items_for_event($db['criteria'] ?? [], $evId)) ?></td>
+                                        <td><?= (int)$and['finalizados'] ?> de <?= (int)$and['total'] ?></td>
+                                        <td><?= $primeiro && (int)$primeiro['judge_count'] > 0 ? h($primeiro['participant']['name']) : '—' ?></td>
+                                        <td><?= $primeiro && (int)$primeiro['judge_count'] > 0 ? number_format((float)$primeiro['score'], 2, ',', '.') : '—' ?></td>
+                                    </tr>
+                                <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                        <p class="dica">
+                            Eventos arquivados não entram. O primeiro lugar considera a nota já com
+                            penalidades descontadas, e só aparece quando há nota lançada.
+                        </p>
+                    <?php endif; ?>
+                </div>
+            <?php endif; ?>
+        </section>
+    <?php endif; ?>
+
     <?php if ($event && $section === 'exportar'): ?>
         <section class="management-page export-page">
             <div class="management-head no-print">
@@ -6287,19 +7483,31 @@ function render_dashboard(): void
                 <h2>Notas por jurado</h2>
                 <div class="table-wrap">
                     <table class="admin-table responsive-cards">
-                        <thead><tr><th>Participante</th><th>Jurado</th><th>Critério</th><th>Nota</th><th>Somatória do jurado</th><th>Somatória do participante</th><th>Checklist</th><th>Assinatura</th><th>Observação</th><th>Atualizado em</th></tr></thead>
+                        <thead><tr><th>Participante</th><th>Jurado</th><th>Critério</th><th>Nota</th><th>Justificativa</th><th>Somatória do jurado</th><th>Somatória do participante</th><th>Checklist</th><th>Assinatura</th><th>Observação</th><th>Atualizado em</th></tr></thead>
                         <tbody>
                         <?php foreach ($detailedRows as $row): ?>
-                            <tr>
+                            <?php $primeira = !empty($row['primeira_da_ficha']); ?>
+                            <tr<?= $primeira ? ' class="inicio-ficha"' : '' ?>>
                                 <td data-label="Participante"><?= h($row['participant']['name']) ?></td>
                                 <td data-label="Jurado"><?= h($row['judge']['name']) ?></td>
                                 <td data-label="Critério"><?= h($row['criterion']['name']) ?></td>
                                 <td data-label="Nota"><?= isset($row['vote']['score']) ? number_format((float)$row['vote']['score'], 1, ',', '.') : '-' ?></td>
+
+                                <?php /* Justificativa é da NOTA, então é por critério — item 6.5
+                                         do regulamento da Batalha e 6.6.e da Junina. */ ?>
+                                <td data-label="Justificativa" class="col-justificativa"><?= ($row['justificativa'] ?? '') !== '' ? h($row['justificativa']) : '-' ?></td>
+
                                 <td data-label="Somatória do jurado"><?= number_format((float)$row['judge_total'], 2, ',', '.') ?></td>
                                 <td data-label="Somatória do participante"><?= number_format((float)$row['participant_total'], 2, ',', '.') ?></td>
                                 <td data-label="Checklist"><?= $row['checklist_done'] ? 'Concluido' : 'Pendente' ?></td>
-                                <td data-label="Assinatura"><?= render_signature_markup($row['review'] ?? null) ?></td>
-                                <td data-label="Observação"><?= $row['observation'] !== '' ? h($row['observation']) : '-' ?></td>
+
+                                <?php /* Assinatura e observação valem para a ficha inteira, não
+                                         para cada critério. Repetir a assinatura em toda linha
+                                         punha a mesma imagem base64 dezenas de vezes no HTML —
+                                         era o que fazia a exportação demorar. */ ?>
+                                <td data-label="Assinatura"><?= $primeira ? render_signature_markup($row['review'] ?? null) : '' ?></td>
+                                <td data-label="Observação" class="col-observacao"><?= $primeira ? ($row['observation'] !== '' ? h($row['observation']) : '-') : '' ?></td>
+
                                 <td data-label="Atualizado em">
                                     <?php
                                     $updatedAt = $row['review_updated_at'] ?? $row['vote']['created_at'] ?? $row['observation_updated_at'] ?? '';
@@ -6751,9 +7959,9 @@ function render_judge_panel(): void
     $judgeId = (int)$_SESSION['judge_id'];
     $section = $_GET['section'] ?? 'votacao';
     $event = find_by_id($db['events'] ?? [], $eventId);
-    $participants = items_for_event($db['participants'] ?? [], $eventId);
-    usort($participants, fn($a, $b) => ((int)$a['order'] <=> (int)$b['order']) ?: strcmp($a['name'], $b['name']));
-    $criteria = items_for_event($db['criteria'] ?? [], $eventId);
+    $participants = ordenar_participantes(items_for_event($db['participants'] ?? [], $eventId));
+    /* A ficha sai na ordem do regulamento, não na de cadastro. */
+    $criteria = ordenar_criterios(items_for_event($db['criteria'] ?? [], $eventId));
     $participantId = isset($_GET['participant_id']) ? (int)$_GET['participant_id'] : (int)($participants[0]['id'] ?? 0);
     $selected = find_by_id($participants, $participantId);
     $selectedIndex = 0;
@@ -6847,7 +8055,12 @@ function render_judge_panel(): void
                         <?php endif; ?>
                     </p>
                 </div>
-                <?php $juradoNome = (string)($_SESSION['judge_name'] ?? 'Jurado'); ?>
+                <?php
+                $juradoNome = (string)($_SESSION['judge_name'] ?? 'Jurado');
+                /* A foto vive no cadastro, não na sessão: trocar a foto passa a
+                   valer na próxima tela, sem o jurado precisar sair e entrar. */
+                $juradoFoto = (string)(find_by_id($db['judges'] ?? [], $judgeId)['photo'] ?? '');
+                ?>
 
                 <div class="judge-timer">
                     <span>Tempo restante</span>
@@ -6861,7 +8074,7 @@ function render_judge_panel(): void
                 <div class="admin-profile" data-perfil>
                     <button class="perfil-gatilho" type="button" data-perfil-botao
                             aria-haspopup="true" aria-expanded="false" aria-controls="menu-jurado">
-                        <span class="avatar" aria-hidden="true"><?= h(perfil_iniciais($juradoNome)) ?></span>
+                        <?= avatar_html($juradoNome, $juradoFoto) ?>
                         <span class="perfil-quem">
                             <strong><?= h($juradoNome) ?></strong>
                             <small>Jurado</small>
@@ -6872,7 +8085,7 @@ function render_judge_panel(): void
 
                     <div class="perfil-menu" id="menu-jurado" hidden>
                         <div class="perfil-cabeca">
-                            <span class="avatar" aria-hidden="true"><?= h(perfil_iniciais($juradoNome)) ?></span>
+                            <?= avatar_html($juradoNome, $juradoFoto) ?>
                             <div>
                                 <strong><?= h($juradoNome) ?></strong>
                                 <span class="status-pill ativo">Jurado</span>
@@ -7070,10 +8283,23 @@ function render_judge_panel(): void
                         <span>Participante <?= $selectedIndex + 1 ?> de <?= count($participants) ?></span>
                         <?php if ($next): ?><a href="?page=judge-panel&participant_id=<?= (int)$next['id'] ?>">›</a><?php endif; ?>
                     </div>
-                    <form method="post">
-                        <input type="hidden" name="action" value="finalize_evaluation">
-                        <button class="button primary" type="submit"><?= $isFinished ? 'Avaliações Finalizadas' : 'Finalizar Avaliações' ?></button>
-                    </form>
+                    <?php /* O botão fica ao lado das setas de navegação, no alto da
+                             tela. Num tablet isso é tocado sem querer — e antes não
+                             havia volta. Agora confirma antes, e reabre depois. */ ?>
+                    <?php if ($isFinished): ?>
+                        <form method="post" class="ficha-reabrir"
+                              onsubmit="return confirm('Reabrir suas avaliações para corrigir as notas?');">
+                            <input type="hidden" name="action" value="reabrir_avaliacao">
+                            <span class="status-pill">Ficha entregue</span>
+                            <button class="button" type="submit">Reabrir para editar</button>
+                        </form>
+                    <?php else: ?>
+                        <form method="post"
+                              onsubmit="return confirm('Finalizar suas avaliações? A ficha será entregue e as notas ficam travadas — se precisar, você poderá reabrir depois.');">
+                            <input type="hidden" name="action" value="finalize_evaluation">
+                            <button class="button primary" type="submit">Finalizar Avaliações</button>
+                        </form>
+                    <?php endif; ?>
                 </div>
 
                 <section class="participant-hero-card">
@@ -7300,9 +8526,9 @@ function render_judge_panel_old(): void
     $eventId = (int)$_SESSION['judge_event_id'];
     $judgeId = (int)$_SESSION['judge_id'];
     $event = find_by_id($db['events'] ?? [], $eventId);
-    $participants = items_for_event($db['participants'] ?? [], $eventId);
-    usort($participants, fn($a, $b) => ((int)$a['order'] <=> (int)$b['order']) ?: strcmp($a['name'], $b['name']));
-    $criteria = items_for_event($db['criteria'] ?? [], $eventId);
+    $participants = ordenar_participantes(items_for_event($db['participants'] ?? [], $eventId));
+    /* A ficha sai na ordem do regulamento, não na de cadastro. */
+    $criteria = ordenar_criterios(items_for_event($db['criteria'] ?? [], $eventId));
     $participantId = isset($_GET['participant_id']) ? (int)$_GET['participant_id'] : (int)($participants[0]['id'] ?? 0);
     $selected = find_by_id($participants, $participantId);
     $votes = array_values(array_filter($db['votes'] ?? [], fn($vote) =>
@@ -7441,6 +8667,34 @@ function render_resultado_final(array $db, int $eventId): string
                 <span class="status-pill pendente">Aguardando os jurados</span>
             <?php endif; ?>
         </div>
+
+        <?php
+        /* Quem já entregou, com o caminho de volta ao lado.
+         *
+         * Antes, uma ficha finalizada por engano só se desfazia mexendo direto
+         * no banco. Num festival em andamento, isso é tempo que não existe. */
+        $finalizados = resultado_finalizados($eventId);
+        ?>
+        <?php if ($finalizados !== []): ?>
+            <ul class="fichas-entregues">
+                <?php foreach (items_for_event($db['judges'] ?? [], $eventId) as $j): ?>
+                    <?php if (!isset($finalizados[(int)$j['id']])) { continue; } ?>
+                    <li>
+                        <span>
+                            <strong><?= h($j['name']) ?></strong>
+                            entregou em <?= h(date('d/m/Y H:i', strtotime((string)$finalizados[(int)$j['id']]))) ?>
+                        </span>
+                        <form method="post"
+                              onsubmit="return confirm('Reabrir esta ficha? O jurado volta a poder editar as notas.');">
+                            <input type="hidden" name="action" value="reabrir_jurado">
+                            <input type="hidden" name="event_id" value="<?= $eventId ?>">
+                            <input type="hidden" name="judge_id" value="<?= (int)$j['id'] ?>">
+                            <button class="button ghost small" type="submit">Reabrir</button>
+                        </form>
+                    </li>
+                <?php endforeach; ?>
+            </ul>
+        <?php endif; ?>
 
         <p class="resultado-destinos">
             <?php if ($destinos === []): ?>

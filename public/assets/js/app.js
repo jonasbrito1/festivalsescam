@@ -426,9 +426,20 @@ if (offlineForm) {
         statusBox.textContent = message;
     };
 
+    /* O token CSRF fica FORA do que é guardado.
+     *
+     * Ele pertence à sessão do momento, não à nota. Guardado junto com a
+     * avaliação, um reenvio feito meia hora depois levava um token já vencido
+     * e era recusado — para sempre, porque a fila reenviava exatamente os
+     * mesmos campos. O token é anexado na hora do envio, em sendEntries(). */
     const serializeForm = () => {
         const formData = new FormData(offlineForm);
-        return Array.from(formData.entries());
+        return Array.from(formData.entries()).filter(([name]) => name !== "_csrf");
+    };
+
+    const tokenAtual = () => {
+        const campo = offlineForm.querySelector('input[name="_csrf"]');
+        return campo ? campo.value : "";
     };
 
     const saveDraft = () => {
@@ -508,7 +519,13 @@ if (offlineForm) {
 
     const sendEntries = async (entries) => {
         const body = new URLSearchParams();
-        entries.forEach(([name, value]) => body.append(name, value));
+        entries.forEach(([name, value]) => {
+            if (name !== "_csrf") {
+                body.append(name, value);
+            }
+        });
+        // Sempre o token desta página, nunca o que veio guardado com a nota.
+        body.append("_csrf", tokenAtual());
         const controller = new AbortController();
         const timeout = window.setTimeout(() => controller.abort(), requestTimeoutMs);
         let response;
@@ -533,10 +550,27 @@ if (offlineForm) {
         } finally {
             window.clearTimeout(timeout);
         }
-        const payload = await response.json();
-        if (!response.ok || !payload.ok) {
-            const error = new Error(payload.message || "Falha ao salvar notas.");
+        /* Nem toda recusa vem em JSON: a de token vencido chegava como texto
+           puro, o JSON.parse estourava, e o erro subia SEM status — o mesmo
+           formato de uma queda de rede. A nota era enfileirada, o jurado via
+           "conexão instável" e nada era salvo. Ler com tolerância preserva o
+           código HTTP, que é o que distingue os dois casos. */
+        let payload = null;
+        try {
+            payload = await response.json();
+        } catch (erroDeLeitura) {
+            payload = null;
+        }
+
+        if (!response.ok || !payload || !payload.ok) {
+            const error = new Error(
+                (payload && payload.message)
+                || (response.status === 419
+                    ? "Sua sessão expirou. A página vai recarregar; suas notas estão guardadas."
+                    : "Falha ao salvar notas.")
+            );
             error.status = response.status;
+            error.code = payload && payload.code ? payload.code : null;
             error.payload = payload;
             throw error;
         }
@@ -565,14 +599,33 @@ if (offlineForm) {
 
         setStatus(`Reconectado. Enviando ${queue.length} avaliacao(oes) pendente(s)...`, "pending");
         const remaining = [];
+        const recusadas = [];
         for (const item of queue) {
             try {
                 await sendEntries(item.entries);
             } catch (error) {
+                /* Recusa do servidor (4xx) é definitiva: repetir só produz
+                   rajada de POST e mantém o jurado achando que as notas estão
+                   a caminho. Sai da fila e aparece na tela. Só falha de rede
+                   ou erro do servidor (5xx) merece nova tentativa. */
+                if (error.status && error.status >= 400 && error.status < 500) {
+                    recusadas.push({ item, mensagem: error.message });
+                    continue;
+                }
                 remaining.push(item);
             }
         }
         writeQueue(remaining);
+
+        if (recusadas.length) {
+            setStatus(
+                `${recusadas.length} avaliação(ões) não foram aceitas: ${recusadas[0].mensagem} `
+                + "Abra o participante e lance as notas novamente.",
+                "error"
+            );
+            return;
+        }
+
         if (!remaining.length) {
             localStorage.removeItem(draftKey);
             sessionStorage.removeItem(draftKey);
@@ -614,6 +667,16 @@ if (offlineForm) {
             setStatus("Notas salvas com sucesso.", "success");
             window.location.href = payload.redirect || window.location.href;
         } catch (error) {
+            /* Token vencido não é falta de rede. Enfileirar aqui punha a nota
+               num laço: recusada a cada tentativa, para sempre. O rascunho já
+               está salvo e volta sozinho depois do recarregamento — e a página
+               nova traz um token válido. */
+            if (error.status === 419) {
+                saveDraft();
+                setStatus(error.message || "Sua sessão expirou. Recarregando a página…", "error");
+                window.setTimeout(() => window.location.reload(), 1800);
+                return;
+            }
             if (error.status && error.status < 500) {
                 setStatus(error.message || "Não foi possível salvar as notas.", "error");
                 return;

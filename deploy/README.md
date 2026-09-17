@@ -127,6 +127,20 @@ Depois de alterar: `systemctl reload php8.3-fpm`.
 
 ---
 
+## Gateway de WhatsApp
+
+O disparo de mensagens não sai pela Cloud API da Meta — sai por uma sessão de
+WhatsApp comum, mantida pela Evolution API em contêiner, em `/opt/evolution`.
+O motivo está no cabeçalho de `lib/evolution.php`.
+
+Instalação passo a passo, compose e modelo de `.env`: [`evolution/`](evolution/).
+
+Nada disso é servido pelo nginx: o PHP fala direto com `http://127.0.0.1:8088`
+por cURL. A porta é publicada apenas em `127.0.0.1` — exposta, a API viraria um
+robô de spam assinando com o número do festival.
+
+---
+
 ## Acesso ao banco
 
 O MySQL escuta apenas em `127.0.0.1` — não há acesso remoto direto.

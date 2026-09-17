@@ -3330,3 +3330,287 @@ td {
         box-shadow: none;
     }
 }
+
+/* ===========================================================================
+ * Cadastro de jurado: foto e escolha de eventos
+ * ======================================================================== */
+
+.campo-foto-jurado {
+    display: flex;
+    flex-direction: column;
+    gap: .4rem;
+}
+
+.campo-foto-jurado .rotulo-foto {
+    font-weight: 600;
+}
+
+.foto-jurado-linha {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.foto-jurado-linha > div {
+    display: flex;
+    flex-direction: column;
+    gap: .3rem;
+    min-width: 0;
+}
+
+.foto-jurado-linha .remover-foto {
+    display: flex;
+    align-items: center;
+    gap: .4rem;
+    font-size: var(--t-sm, .9rem);
+}
+
+.eventos-do-jurado {
+    display: flex;
+    flex-direction: column;
+    gap: .5rem;
+
+    margin: .25rem 0;
+    padding: .9rem 1rem;
+
+    border: 1px solid #dbe2f0;
+    border-radius: var(--ui-raio, 10px);
+}
+
+.eventos-do-jurado legend {
+    padding: 0 .4rem;
+    font-weight: 600;
+}
+
+.eventos-do-jurado .evento-opcao {
+    display: flex;
+    align-items: flex-start;
+    gap: .6rem;
+
+    /* Alvo de toque generoso: esta tela também é usada em tablet. */
+    padding: .5rem .4rem;
+    border-radius: var(--ui-raio, 10px);
+    cursor: pointer;
+}
+
+.eventos-do-jurado .evento-opcao:hover {
+    background: #f4f6fb;
+}
+
+.eventos-do-jurado .evento-opcao input {
+    width: 1.15rem;
+    height: 1.15rem;
+    margin-top: .1rem;
+    flex: 0 0 auto;
+}
+
+.eventos-do-jurado .evento-opcao small {
+    color: var(--sesc-muted, #536078);
+}
+
+/* Avatar com foto: a imagem preenche o mesmo círculo das iniciais.
+   O background sai porque a foto o cobre — e sem overflow:hidden os cantos
+   da imagem escapariam do círculo. */
+.admin-profile .avatar.avatar-foto {
+    overflow: hidden;
+    background: none;
+}
+
+.admin-profile .avatar.avatar-foto img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+/* ===========================================================================
+ * Exportação de notas em PDF (impressão do navegador)
+ *
+ * O relatório tem onze colunas, duas delas com texto longo (justificativa e
+ * observação). Sem estas regras ele saía em retrato, cortado na largura, com
+ * cabeçalho só na primeira página e linhas partidas ao meio na quebra.
+ * ======================================================================== */
+
+@media print {
+    @page {
+        size: A4 landscape;
+        margin: 10mm;
+    }
+
+    .pdf-sheet {
+        font-size: 8.5pt;
+    }
+
+    /* Sem isto o navegador imprime apenas a faixa visível do rolamento
+       horizontal, e o resto da tabela simplesmente não sai no papel. */
+    .pdf-sheet .table-wrap {
+        overflow: visible;
+    }
+
+    .pdf-sheet table {
+        width: 100%;
+        table-layout: fixed;
+        border-collapse: collapse;
+    }
+
+    /* A tabela vira cartões em tela estreita; no papel precisa continuar
+       tabela, senão o relatório perde o formato de planilha. */
+    .pdf-sheet table.responsive-cards { display: table; }
+    .pdf-sheet table.responsive-cards thead { display: table-header-group; }
+    .pdf-sheet table.responsive-cards tbody { display: table-row-group; }
+    .pdf-sheet table.responsive-cards tr { display: table-row; }
+    .pdf-sheet table.responsive-cards th,
+    .pdf-sheet table.responsive-cards td { display: table-cell; }
+
+    /* Cabeçalho repetido em toda página: da segunda em diante, sem ele, não
+       há como saber qual coluna é qual. */
+    .pdf-sheet thead { display: table-header-group; }
+
+    .pdf-sheet tr {
+        break-inside: avoid;
+        page-break-inside: avoid;
+    }
+
+    .pdf-sheet th,
+    .pdf-sheet td {
+        padding: 2pt 3pt;
+        border: .5pt solid #b9c2d4;
+        vertical-align: top;
+        overflow-wrap: anywhere;
+        word-break: normal;
+    }
+
+    .pdf-sheet th { background: #eef2fa !important; }
+
+    /* Texto longo recebe largura; as colunas numéricas cedem a delas. */
+    .pdf-sheet .col-justificativa { width: 20%; }
+    .pdf-sheet .col-observacao { width: 14%; }
+
+    /* Início de cada ficha (jurado × participante): separa uma da outra. */
+    .pdf-sheet tr.inicio-ficha td {
+        border-top: 1.2pt solid #002f8f;
+    }
+
+    .pdf-sheet .signature-preview img {
+        max-width: 90pt;
+        max-height: 30pt;
+    }
+}
+
+/* ===========================================================================
+ * Reabrir ficha entregue
+ * ======================================================================== */
+
+.ficha-reabrir {
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    flex-wrap: wrap;
+}
+
+.fichas-entregues {
+    display: flex;
+    flex-direction: column;
+    gap: .4rem;
+    margin: .6rem 0 0;
+    padding: 0;
+    list-style: none;
+}
+
+.fichas-entregues li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: .8rem;
+    flex-wrap: wrap;
+
+    padding: .5rem .7rem;
+    border: 1px solid #dbe2f0;
+    border-radius: var(--ui-raio, 10px);
+    background: #fff;
+}
+
+.fichas-entregues form {
+    margin: 0;
+}
+
+/* ===========================================================================
+ * Relatório por quesito
+ * ======================================================================== */
+
+.quesito-bloco {
+    margin-bottom: 1.2rem;
+}
+
+@media print {
+    /* Cada quesito inteiro na mesma página sempre que couber: um ranking
+       partido ao meio obriga a virar a folha para ler o pódio. */
+    .quesito-bloco {
+        break-inside: avoid;
+        page-break-inside: avoid;
+    }
+
+    /* Este relatório tem cinco colunas e cabe em retrato — ao contrário da
+       exportação de notas, que tem onze e precisa de paisagem. */
+    .export-page .pdf-sheet .quesito-bloco table {
+        table-layout: auto;
+    }
+}
+
+/* ===========================================================================
+ * Módulo de relatórios: filtros e fichas
+ * ======================================================================== */
+
+.filtros-relatorio {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: .9rem;
+    align-items: start;
+}
+
+.filtros-relatorio label small {
+    font-weight: 400;
+    color: var(--sesc-muted, #536078);
+}
+
+.ficha-resumo {
+    margin: .2rem 0 .8rem;
+    color: var(--sesc-muted, #536078);
+}
+
+.ficha-bloco {
+    margin-bottom: 1.6rem;
+}
+
+.ficha-bloco h3 {
+    margin: 1rem 0 .4rem;
+}
+
+/* Justificativa embaixo da nota, na mesma célula: o jurado escreveu por causa
+   daquela nota, e separá-las em colunas obrigaria a cruzar a vista. */
+.justificativa-celula {
+    display: block;
+    margin-top: .25rem;
+    color: var(--sesc-muted, #536078);
+    font-size: .82em;
+    line-height: 1.3;
+}
+
+.lista-penalidades {
+    margin: .3rem 0 .8rem;
+    padding-left: 1.1rem;
+}
+
+@media print {
+    /* Uma ficha por página: é o documento que se entrega a uma quadrilha, e
+       não faz sentido chegar com metade da ficha da concorrente atrás. */
+    .ficha-bloco {
+        break-after: page;
+        page-break-after: always;
+    }
+
+    .ficha-bloco:last-of-type {
+        break-after: auto;
+        page-break-after: auto;
+    }
+}

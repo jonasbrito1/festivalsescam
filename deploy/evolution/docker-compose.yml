@@ -1,0 +1,69 @@
+# =============================================================================
+# Gateway de WhatsApp (Evolution API) — festival.sescam.online
+#
+# Sobe três contêineres que só existem para o servidor falar consigo mesmo:
+# o PHP chama http://127.0.0.1:8088 e a Evolution entrega pela sessão de
+# WhatsApp comum. Ver lib/evolution.php para o porquê de não usarmos a Meta.
+#
+# REGRA QUE NÃO SE NEGOCIA: as portas estão publicadas em 127.0.0.1, nunca em
+# 0.0.0.0. Quem alcança esta API manda mensagem pelo número do festival — e a
+# Evolution não tem login, tem só a apikey. Exposta na internet, ela vira um
+# robô de spam com o nosso número na assinatura, e o número é banido.
+# =============================================================================
+
+services:
+  evolution:
+    # Namespace evoapicloud, não atendai: o repositório antigo ainda LISTA as
+    # tags na API do Docker Hub, mas o registry recusa o download com 401. A
+    # imagem oficial mudou de dono; puxar de atendai falha.
+    image: evoapicloud/evolution-api:v2.3.7
+    container_name: evolution-festival
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8088:8080"
+    env_file:
+      - .env
+    environment:
+      # Fica AQUI, e não no .env, porque o Compose só substitui ${...} dentro
+      # deste arquivo — num env_file a senha chegaria literalmente como
+      # "${POSTGRES_PASSWORD}" e o banco recusaria a conexão. Assim a senha é
+      # escrita uma vez só, no .env, e monta a URI daqui.
+      DATABASE_CONNECTION_URI: postgresql://evolution:${POSTGRES_PASSWORD}@postgres:5432/evolution?schema=public
+    volumes:
+      - evolution_instances:/evolution/instances
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: evolution-postgres
+    restart: unless-stopped
+    # Sem "ports": só os outros contêineres precisam alcançá-lo. O MySQL do
+    # festival continua intocado na porta 3306 do host.
+    environment:
+      POSTGRES_USER: evolution
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: evolution
+    volumes:
+      - evolution_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U evolution -d evolution"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: evolution-redis
+    restart: unless-stopped
+    command: redis-server --save "" --appendonly no
+    volumes:
+      - evolution_redis:/data
+
+volumes:
+  evolution_instances:
+  evolution_postgres:
+  evolution_redis:

@@ -1,0 +1,185 @@
+/* ===========================================================================
+ * Teclado de nota na própria tela (tablet)
+ *
+ * Companheiro de public/assets/js/teclado-nota.js. Só aparece quando aquele
+ * arquivo mostra o painel — no computador nada disto entra em cena.
+ *
+ * As teclas são grandes de propósito: o jurado usa o tablet em pé, muitas
+ * vezes segurando o aparelho com uma das mãos, sob luz de palco. Tecla
+ * pequena aqui é nota errada lançada.
+ * ======================================================================== */
+
+.teclado-nota {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 1200;
+
+    display: flex;
+    flex-direction: column;
+    gap: .6rem;
+
+    padding: .75rem .75rem calc(.75rem + env(safe-area-inset-bottom, 0px));
+
+    background: #fff;
+    border-top: 3px solid var(--sesc-blue, #002f8f);
+    border-radius: var(--ui-raio-g, 16px) var(--ui-raio-g, 16px) 0 0;
+    box-shadow: 0 -12px 30px rgba(7, 20, 61, .22);
+}
+
+.teclado-nota[hidden] {
+    display: none;
+}
+
+/* Respiro para que a linha em edição não fique atrás do teclado. */
+body.com-teclado-nota {
+    padding-bottom: 22rem;
+}
+
+/* ---------------------------------------------------------------------------
+ * Topo: qual critério está sendo avaliado, a faixa permitida e o que já
+ * foi digitado.
+ * ------------------------------------------------------------------------ */
+.teclado-nota-topo {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+
+    padding: 0 .25rem;
+}
+
+.teclado-nota-alvo {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.teclado-nota-alvo strong {
+    font-size: var(--t-md, 1rem);
+    color: var(--sesc-text, #07143d);
+
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.teclado-nota-alvo small {
+    font-size: var(--t-xs, .78rem);
+    color: var(--sesc-muted, #536078);
+}
+
+.teclado-nota-leitura {
+    flex: 0 0 auto;
+    min-width: 4.5rem;
+    padding: .35rem .8rem;
+
+    font-size: var(--t-lg, 1.25rem);
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    color: var(--sesc-blue, #002f8f);
+
+    background: #eef2fb;
+    border-radius: var(--ui-raio, 10px);
+}
+
+/* Nota fora da faixa: o Pronto recusa e diz o motivo aqui. */
+.teclado-nota-leitura.tn-erro {
+    font-size: var(--t-sm, .9rem);
+    color: #9f1239;
+    background: #ffe4e6;
+}
+
+/* ---------------------------------------------------------------------------
+ * As teclas
+ * ------------------------------------------------------------------------ */
+.teclado-nota-grade {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: .5rem;
+}
+
+.teclado-nota-grade button {
+    min-height: 3.5rem;
+
+    font-size: var(--t-lg, 1.25rem);
+    font-weight: 600;
+    color: var(--sesc-text, #07143d);
+
+    background: #f4f6fb;
+    border: 1px solid #dbe2f0;
+    border-radius: var(--ui-raio, 10px);
+
+    cursor: pointer;
+    transition: background var(--ui-transicao, 200ms), transform 80ms;
+}
+
+.teclado-nota-grade button:active {
+    background: #dde5f7;
+    transform: scale(.96);
+}
+
+.teclado-nota-grade .tn-apagar {
+    font-size: var(--t-md, 1rem);
+    color: #9f1239;
+    background: #fff1f2;
+    border-color: #fecdd3;
+}
+
+/* ---------------------------------------------------------------------------
+ * Rodapé
+ * ------------------------------------------------------------------------ */
+.teclado-nota-rodape {
+    display: grid;
+    grid-template-columns: 1fr 2fr;
+    gap: .5rem;
+}
+
+.teclado-nota-rodape button {
+    min-height: 3.25rem;
+
+    font-size: var(--t-md, 1rem);
+    font-weight: 700;
+    border-radius: var(--ui-raio, 10px);
+    cursor: pointer;
+}
+
+.teclado-nota-rodape .tn-limpar {
+    color: var(--sesc-muted, #536078);
+    background: #fff;
+    border: 1px solid #dbe2f0;
+}
+
+.teclado-nota-rodape .tn-pronto {
+    color: #fff;
+    background: var(--sesc-blue, #002f8f);
+    border: 1px solid var(--sesc-blue-dark, #00247a);
+}
+
+.teclado-nota-rodape .tn-pronto:active {
+    background: var(--sesc-blue-dark, #00247a);
+}
+
+.teclado-nota button:focus-visible {
+    outline: 3px solid var(--ui-foco, #2563eb);
+    outline-offset: 2px;
+}
+
+/* ---------------------------------------------------------------------------
+ * Tablet deitado: o teclado ocupa a largura toda sem necessidade. Encolhe e
+ * encosta à direita, perto de onde o polegar está.
+ * ------------------------------------------------------------------------ */
+@media (min-width: 700px) and (orientation: landscape) {
+    .teclado-nota {
+        left: auto;
+        width: min(24rem, 45vw);
+        border-radius: var(--ui-raio-g, 16px) 0 0 0;
+        border-left: 1px solid #dbe2f0;
+    }
+
+    body.com-teclado-nota {
+        padding-bottom: 18rem;
+    }
+}

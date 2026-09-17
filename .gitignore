@@ -22,6 +22,8 @@ mobile_pwa/data/sessions/
 public/uploads/participants/*
 !public/uploads/participants/.gitkeep
 mobile_pwa/public/uploads/participants/*
+public/uploads/judges/*
+!public/uploads/judges/.gitkeep
 dist/uploads/
 
 # Variaveis de ambiente: senhas de banco, chaves, endereços internos.

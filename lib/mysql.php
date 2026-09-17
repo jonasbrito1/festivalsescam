@@ -509,10 +509,11 @@ function mysql_sync_judges(PDO $pdo, array $itens): void
 {
     $ids = [];
     $sql = $pdo->prepare(
-        'INSERT INTO judges (id, event_id, name, username, phone, password_hash, status, created_at)
-         VALUES (:id, :evento, :nome, :usuario, :fone, :senha, :status, :criado)
+        'INSERT INTO judges (id, event_id, name, username, phone, photo_url, password_hash, status, created_at)
+         VALUES (:id, :evento, :nome, :usuario, :fone, :foto, :senha, :status, :criado)
          ON DUPLICATE KEY UPDATE event_id = VALUES(event_id), name = VALUES(name),
              username = VALUES(username), phone = VALUES(phone),
+             photo_url = VALUES(photo_url),
              password_hash = VALUES(password_hash), status = VALUES(status)'
     );
 
@@ -524,6 +525,7 @@ function mysql_sync_judges(PDO $pdo, array $itens): void
             ':nome'    => (string) $j['name'],
             ':usuario' => (string) $j['username'],
             ':fone'    => (string) ($j['phone'] ?? ''),
+            ':foto'    => (string) ($j['photo'] ?? ''),
             ':senha'   => (string) $j['password'],
             ':status'  => ($j['status'] ?? 'ativo') === 'inativo' ? 'inativo' : 'ativo',
             ':criado'  => mysql_data($j['created_at'] ?? null) ?? date('Y-m-d H:i:s'),
@@ -715,13 +717,20 @@ function mysql_ler_banco(): ?array
                 'name'       => (string) $r['name'],
                 'username'   => (string) $r['username'],
                 'phone'      => (string) ($r['phone'] ?? ''),
+                'photo'      => (string) ($r['photo_url'] ?? ''),
                 'password'   => (string) $r['password_hash'],
                 'status'     => (string) $r['status'],
                 'created_at' => mysql_iso($r['created_at']),
             ];
         }
 
-        foreach ($pdo->query('SELECT * FROM participants ORDER BY id') as $r) {
+        /* Ordem de apresentação, não ordem de cadastro.
+         *
+         * Lendo por id, mudar a "Ordem" de um participante não movia nada na
+         * tela — o número trocava e a linha ficava onde estava, como se o
+         * campo não tivesse efeito. O id entra só como desempate, para a
+         * lista não dançar entre recargas quando duas ordens forem iguais. */
+        foreach ($pdo->query('SELECT * FROM participants ORDER BY event_id, presentation_order, id') as $r) {
             $db['participants'][] = [
                 'id'         => (int) $r['id'],
                 'event_id'   => (int) $r['event_id'],
@@ -736,7 +745,11 @@ function mysql_ler_banco(): ?array
             ];
         }
 
-        foreach ($pdo->query('SELECT * FROM criteria ORDER BY id') as $r) {
+        /* Mesma história dos participantes: display_order existia, era gravado
+           e nunca era lido. A ficha do jurado saía na ordem de cadastro.
+           Eventos antigos têm display_order = 0 em todos os critérios; com o
+           id como desempate, eles continuam exatamente como estavam. */
+        foreach ($pdo->query('SELECT * FROM criteria ORDER BY event_id, display_order, id') as $r) {
             $db['criteria'][] = [
                 'id'            => (int) $r['id'],
                 'event_id'      => (int) $r['event_id'],

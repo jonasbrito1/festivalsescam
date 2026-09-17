@@ -63,6 +63,51 @@ function resultado_marcar_finalizado(int $eventId, int $judgeId): void
     }
 }
 
+/**
+ * Reabre a ficha de um jurado, desfazendo a finalização.
+ *
+ * ---------------------------------------------------------------------------
+ * POR QUE ISTO EXISTE
+ * ---------------------------------------------------------------------------
+ * "Finalizar Avaliações" congela a ficha, e isso está certo: é o momento em
+ * que o regulamento considera a ficha entregue. O que estava errado era não
+ * haver volta. Um toque a mais no botão — num tablet, com o dedo — trancava o
+ * jurado no meio do trabalho, sem nenhum caminho dentro do sistema para
+ * corrigir. Foi o que aconteceu em 30/08.
+ *
+ * Reabrir é uma ação legítima da organização de um festival. O que não pode é
+ * acontecer em silêncio: cada reabertura fica registrada no log, com quem
+ * pediu, porque mexe na ficha que sustenta o resultado.
+ */
+function resultado_desmarcar_finalizado(int $eventId, int $judgeId, string $quem = ''): bool
+{
+    $pdo = mysql_conexao();
+
+    if (!$pdo) {
+        return false;
+    }
+
+    try {
+        $sql = $pdo->prepare('DELETE FROM jurado_finalizou WHERE event_id = ? AND judge_id = ?');
+        $sql->execute([$eventId, $judgeId]);
+
+        error_log(sprintf(
+            'Ficha reaberta: evento %d, jurado %d, por %s',
+            $eventId,
+            $judgeId,
+            $quem !== '' ? $quem : 'o proprio jurado'
+        ));
+
+        cache_esquecer('resultado');
+
+        return true;
+    } catch (Throwable $e) {
+        error_log('resultado_desmarcar_finalizado: ' . $e->getMessage());
+
+        return false;
+    }
+}
+
 /** Este jurado já finalizou neste evento? */
 function resultado_jurado_finalizou(int $eventId, int $judgeId): bool
 {
