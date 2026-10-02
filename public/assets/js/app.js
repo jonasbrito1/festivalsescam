@@ -784,31 +784,79 @@ document.addEventListener('click', (event) => {
     }
 });
 
-/* Voto do público: o botão "Confirmar voto" acende quando todas as notas
-   daquele participante estão escolhidas. Só aparência — quem garante que
-   nada falta é o required dos campos e, depois, o servidor. */
-const vpAtualizarBotao = (form) => {
+/* Voto do público: escolher uma apresentação acende o botão e põe o nome
+   nele ("Votar em ..."), para a pessoa conferir antes de confirmar. Sem
+   JavaScript, o required do rádio e o servidor continuam valendo. */
+document.querySelectorAll('[data-vp-escolha]').forEach((form) => {
     const botao = form.querySelector('[data-vp-enviar]');
-    if (!botao) {
-        return;
-    }
-    const grupos = new Set(Array.from(form.querySelectorAll('input[name^="notas["]')).map((campo) => campo.name));
-    const completo = Array.from(grupos).every((nome) => {
-        const campos = form.querySelectorAll(`input[name="${CSS.escape(nome)}"]`);
-        return Array.from(campos).some((campo) => (campo.type === 'radio' ? campo.checked : String(campo.value).trim() !== ''));
-    });
-    botao.classList.toggle('incompleto', !completo);
-};
-
-document.querySelectorAll('[data-vp-form]').forEach((form) => {
-    vpAtualizarBotao(form);
-    form.addEventListener('input', () => vpAtualizarBotao(form));
-    form.addEventListener('change', () => vpAtualizarBotao(form));
-    /* Um toque só: evita duas cédulas se a rede demorar e a pessoa insistir. */
-    form.addEventListener('submit', () => {
-        const botao = form.querySelector('[data-vp-enviar]');
+    const atualizar = () => {
+        const marcado = form.querySelector('input[name="participant_id"]:checked');
+        if (!botao) {
+            return;
+        }
+        botao.classList.toggle('incompleto', !marcado);
+        botao.textContent = marcado ? `Votar em ${marcado.dataset.nome || 'esta apresentação'}` : 'Escolha uma apresentação';
+    };
+    form.addEventListener('change', atualizar);
+    atualizar();
+    /* Um toque só: evita duas tentativas se a rede demorar e a pessoa insistir. */
+    form.addEventListener('submit', (evento) => {
+        if (!form.querySelector('input[name="participant_id"]:checked')) {
+            return;
+        }
         if (botao) {
             window.setTimeout(() => { botao.disabled = true; botao.textContent = 'Enviando…'; }, 0);
         }
     });
+});
+
+/* Painel do administrador: prévia ao vivo das cores da página do público.
+   Mesma regra de contraste de vp_tema_css() no PHP. */
+const vpLuminancia = (hex) => {
+    const canal = (v) => {
+        const c = v / 255;
+        return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    };
+    const n = (i) => parseInt(hex.slice(i, i + 2), 16);
+    return 0.2126 * canal(n(1)) + 0.7152 * canal(n(3)) + 0.0722 * canal(n(5));
+};
+const vpRgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(', ');
+
+document.querySelectorAll('[data-vp-tema]').forEach((form) => {
+    const previa = document.querySelector('[data-vp-previa]');
+    if (!previa) {
+        return;
+    }
+    const aplicar = () => {
+        const fundo = form.querySelector('[data-vp-cor="fundo"]').value;
+        const destaque = form.querySelector('[data-vp-cor="destaque"]').value;
+        const sobre = form.querySelector('[data-vp-sobre]');
+        const claro = vpLuminancia(fundo) > 0.4;
+        const vars = {
+            '--vp-noite': fundo,
+            '--vp-noite-rgb': vpRgb(fundo),
+            '--vp-foco': destaque,
+            '--vp-foco-rgb': vpRgb(destaque),
+            '--vp-sobre-foco': vpLuminancia(destaque) > 0.4 ? '#0b1736' : '#ffffff',
+            '--vp-texto': claro ? '#0b1736' : '#f3f6ff',
+            '--vp-suave': claro ? '#4b5876' : '#b5c2e3',
+            '--vp-cartao': claro ? 'rgba(255, 255, 255, .82)' : 'rgba(255, 255, 255, .07)',
+            '--vp-cartao-forte': claro ? 'rgba(255, 255, 255, .95)' : 'rgba(255, 255, 255, .12)',
+            '--vp-borda': claro ? 'rgba(11, 23, 54, .14)' : 'rgba(255, 255, 255, .14)',
+        };
+        if (sobre) {
+            vars['--vp-sobreposicao'] = String(Number(sobre.value) / 100);
+            const saida = form.querySelector('[data-vp-sobre-saida]');
+            if (saida) {
+                saida.textContent = `${sobre.value}%`;
+            }
+        }
+        Object.entries(vars).forEach(([nome, valor]) => previa.style.setProperty(nome, valor));
+        const pergunta = form.querySelector('input[name="pergunta"]');
+        const alvo = previa.querySelector('[data-vp-previa-pergunta]');
+        if (pergunta && alvo) {
+            alvo.textContent = pergunta.value.trim() || pergunta.placeholder;
+        }
+    };
+    form.addEventListener('input', aplicar);
 });

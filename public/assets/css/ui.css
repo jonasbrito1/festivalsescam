@@ -3820,9 +3820,13 @@ td {
    Voto do público — página aberta (?page=votar)
 
    Quem abre está sentado na plateia, com a luz apagada, segurando o celular.
-   Por isso a página é escura (azul do Sesc, não branca: não ofusca nem
+   Por padrão a página é escura (azul do Sesc, não branca: não ofusca nem
    ilumina o rosto de quem está do lado) e tem UM elemento que acende — a
-   nota escolhida, em amarelo Sesc, como um foco de luz. O resto fica quieto.
+   apresentação escolhida, na cor de destaque, como um foco de luz.
+
+   As cores vêm do painel (Voto do público > Aparência) como variáveis CSS
+   no .vp-palco — ver vp_tema_css(). Texto e cartões se ajustam ao fundo
+   escolhido, claro ou escuro.
    ------------------------------------------------------------------------- */
 .page-votar {
     --sesc-blue: #002f8f;
@@ -3830,17 +3834,42 @@ td {
     --sesc-yellow: #ffc400;
     --sesc-text: #07143d;
     --sesc-muted: #536078;
+    background: #001a52;
+}
 
-    --vp-noite: #001a52;       /* fundo da página */
-    --vp-cartao: #0a2a6e;      /* cartão do participante */
-    --vp-borda: #1d3f8c;
+/* Valores de reserva, caso o estilo do evento não chegue. */
+.vp-palco {
+    --vp-noite: #001a52;
+    --vp-noite-rgb: 0, 26, 82;
+    --vp-foco: #ffc400;
+    --vp-foco-rgb: 255, 196, 0;
+    --vp-sobre-foco: #0b1736;
     --vp-texto: #f3f6ff;
-    --vp-suave: #a9b8de;
-    --vp-foco: #ffc400;        /* a nota escolhida */
-    --vp-ok: #4fd18b;
+    --vp-suave: #b5c2e3;
+    --vp-cartao: rgba(255, 255, 255, .07);
+    --vp-cartao-forte: rgba(255, 255, 255, .12);
+    --vp-borda: rgba(255, 255, 255, .14);
+    --vp-ok: #2fbf71;
+    --vp-sobreposicao: .65;
 
+    position: relative;
+    isolation: isolate;
+    min-height: 100vh;
     color: var(--vp-texto);
     background: var(--vp-noite);
+}
+
+/* Imagem de fundo: presa à tela (não rola com a página) e coberta pela cor
+   de fundo na intensidade escolhida, para o texto continuar legível. Feita
+   com um elemento fixo, e não background-attachment: fixed, que o Safari
+   do iPhone ignora. */
+.vp-fundo {
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background:
+        linear-gradient(rgba(var(--vp-noite-rgb), var(--vp-sobreposicao)), rgba(var(--vp-noite-rgb), var(--vp-sobreposicao))),
+        var(--vp-fundo-img) center / cover no-repeat;
 }
 
 /* Quem vota não precisa do menu do sistema (Administrador, Jurado...). */
@@ -3854,8 +3883,8 @@ td {
     padding: 0;
 }
 
-/* O aviso de "voto registrado" ou de erro desce para o pé da tela, onde o
-   polegar está, em vez de ficar lá no topo, longe do cartão votado. */
+/* O aviso de "voto registrado" ou de erro aparece no pé da tela, onde o
+   polegar está, e some sozinho. */
 .page-votar .flash {
     position: fixed;
     top: auto;
@@ -3877,28 +3906,27 @@ td {
     100% { opacity: 0; transform: translate(-50%, 12px); visibility: hidden; }
 }
 
-.vp-palco {
-    min-height: 100vh;
-}
-
 /* --- Topo ----------------------------------------------------------------- */
 .vp-hero {
     position: relative;
     display: grid;
-    align-items: end;
     justify-items: center;
     width: min(760px, 100%);
     margin: 0 auto;
-    padding: 56px 20px 28px;
+    padding: 52px 20px 26px;
     text-align: center;
-    background:
-        radial-gradient(120% 80% at 50% 0%, rgba(255, 196, 0, .10), transparent 60%),
-        linear-gradient(180deg, var(--sesc-blue) 0%, var(--vp-noite) 100%);
+    background: radial-gradient(120% 80% at 50% 0%, rgba(var(--vp-foco-rgb), .14), transparent 62%);
 }
 
-.vp-hero-logo {
+.vp-hero-logo.sesc-logo.small {
     margin-bottom: 18px;
-    color: #fff;
+    color: var(--vp-texto);
+    font-size: 54px;
+}
+
+.vp-hero-logo.sesc-logo.small::before {
+    border-top-color: var(--vp-foco);
+    border-top-width: 9px;
 }
 
 /* Com capa: a arte do evento aparece INTEIRA no topo — sem corte e sem
@@ -3906,7 +3934,7 @@ td {
    borda de baixo se dissolve no fundo, e o nome do evento vem logo abaixo. */
 .vp-hero.com-capa {
     display: block;
-    padding: 0 0 24px;
+    padding: 0 0 22px;
     background: none;
 }
 
@@ -3920,82 +3948,42 @@ td {
     mask-image: linear-gradient(180deg, #000 78%, transparent 100%);
 }
 
-.vp-hero.com-capa .vp-hero-texto {
-    margin-top: -6px;
-    padding: 0 20px;
-}
-
 .vp-hero-texto {
-    position: relative;
-    z-index: 1;
     display: grid;
     justify-items: center;
     gap: 10px;
 }
 
+.vp-hero.com-capa .vp-hero-texto {
+    margin-top: -6px;
+    padding: 0 20px;
+}
+
 .vp-selo {
     padding: 4px 12px;
     border-radius: 999px;
-    color: var(--vp-noite);
+    color: var(--vp-sobre-foco);
     background: var(--vp-foco);
     font-size: .8rem;
     font-weight: 800;
-    letter-spacing: .01em;
 }
 
 .vp-hero h1 {
     max-width: 22ch;
     margin: 0;
-    color: #fff;
+    color: var(--vp-texto);
     font-size: clamp(1.6rem, 6.4vw, 2.6rem);
     font-weight: 900;
     line-height: 1.05;
     letter-spacing: -.015em;
     text-wrap: balance;
-    text-shadow: 0 2px 18px rgba(0, 10, 40, .5);
 }
 
 /* --- Coluna ---------------------------------------------------------------- */
 .vp-publico {
-    display: grid;
-    gap: 14px;
     width: min(600px, 100%);
     margin: 0 auto;
-    padding: 8px 16px 40px;
-}
-
-.vp-progresso {
-    display: grid;
-    gap: 8px;
-    padding: 4px 2px 10px;
-}
-
-.vp-progresso p {
-    margin: 0;
-    color: var(--vp-texto);
-    font-weight: 600;
-}
-
-.vp-progresso strong {
-    color: var(--vp-foco);
-}
-
-.vp-progresso small {
-    color: var(--vp-suave);
-}
-
-.vp-barra {
-    height: 6px;
-    border-radius: 999px;
-    background: var(--vp-borda);
-    overflow: hidden;
-}
-
-.vp-barra span {
-    display: block;
-    height: 100%;
-    border-radius: inherit;
-    background: var(--vp-foco);
+    padding: 8px 16px 32px;
 }
 
 .vp-aviso {
@@ -4008,6 +3996,8 @@ td {
     color: var(--vp-suave);
     background: var(--vp-cartao);
     text-align: center;
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
 }
 
 .vp-aviso strong {
@@ -4015,29 +4005,70 @@ td {
     font-size: 1.1rem;
 }
 
-/* --- Cartão do participante ----------------------------------------------- */
-.vp-card {
-    display: grid;
-    gap: 18px;
-    padding: 18px 18px 20px;
-    border: 1px solid var(--vp-borda);
-    border-radius: 20px;
-    background: var(--vp-cartao);
-    scroll-margin-top: 16px;
+/* --- A escolha ------------------------------------------------------------- */
+.vp-escolha fieldset {
+    margin: 0;
+    padding: 0;
+    border: 0;
 }
 
-.vp-card-topo {
-    display: flex;
+.vp-escolha legend {
+    display: grid;
+    gap: 6px;
+    width: 100%;
+    margin-bottom: 16px;
+    padding: 0 2px;
+}
+
+.vp-pergunta {
+    color: var(--vp-texto);
+    font-size: 1.4rem;
+    font-weight: 900;
+    line-height: 1.15;
+    letter-spacing: -.01em;
+}
+
+.vp-escolha legend small {
+    color: var(--vp-suave);
+    font-size: .92rem;
+}
+
+.vp-lista {
+    display: grid;
+    gap: 10px;
+}
+
+.vp-opcao {
+    position: relative;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: center;
     gap: 14px;
+    min-height: 68px;
+    padding: 12px 16px;
+    border: 1px solid var(--vp-borda);
+    border-radius: 16px;
+    background: var(--vp-cartao);
+    cursor: pointer;
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+    transition: border-color .15s ease, background-color .15s ease, box-shadow .15s ease;
+}
+
+.vp-opcao input {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    opacity: 0;
+    cursor: pointer;
 }
 
 /* A ordem de apresentação é o que a plateia ouve no microfone: "agora, a
-   número 3". Por isso ela é grande e vem antes do nome. */
+   número 3". Por isso ela vem grande, antes do nome. */
 .vp-ordem {
-    flex: 0 0 auto;
+    min-width: 2ch;
     color: var(--vp-foco);
-    font-size: 1.9rem;
+    font-size: 1.6rem;
     font-weight: 900;
     font-variant-numeric: tabular-nums;
     line-height: 1;
@@ -4045,211 +4076,150 @@ td {
 }
 
 .vp-quem {
-    flex: 1 1 auto;
+    display: grid;
+    gap: 2px;
     min-width: 0;
 }
 
-.vp-quem h2 {
-    margin: 0;
+.vp-quem strong {
     color: var(--vp-texto);
-    font-size: 1.2rem;
+    font-size: 1.08rem;
     font-weight: 800;
     line-height: 1.2;
 }
 
-.vp-musica {
-    margin: 2px 0 0;
+.vp-quem small {
     color: var(--vp-suave);
-    font-size: .92rem;
-}
-
-/* Já votado: o cartão encolhe e apaga — o que falta votar é o que importa. */
-.vp-card.votado {
-    gap: 6px;
-    padding-block: 14px;
-    border-color: transparent;
-    background: rgba(10, 42, 110, .45);
-}
-
-.vp-card.votado .vp-ordem {
-    color: var(--vp-suave);
-    font-size: 1.4rem;
-}
-
-.vp-card.votado .vp-quem h2 {
-    font-size: 1.05rem;
-    color: var(--vp-suave);
-}
-
-.vp-check {
-    display: grid;
-    place-items: center;
-    flex: 0 0 auto;
-    width: 32px;
-    height: 32px;
-    border-radius: 50%;
-    color: var(--vp-noite);
-    background: var(--vp-ok);
-    font-weight: 900;
-}
-
-.vp-registrado {
-    margin: 0;
-    color: var(--vp-ok);
     font-size: .9rem;
-    font-weight: 700;
 }
 
-/* --- Critério e notas ------------------------------------------------------ */
-.vp-form {
-    display: grid;
-    gap: 18px;
-}
-
-.vp-criterio {
-    display: grid;
-    gap: 10px;
-    margin: 0;
-    padding: 0;
-    border: 0;
-}
-
-.vp-criterio legend {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 4px 12px;
-    width: 100%;
-    margin-bottom: 10px;
-    padding: 0;
-}
-
-.vp-criterio legend span {
-    color: var(--vp-texto);
-    font-weight: 700;
-}
-
-.vp-criterio legend small {
-    color: var(--vp-suave);
-    font-size: .85rem;
-}
-
-.vp-desc {
-    margin: -4px 0 2px;
-    color: var(--vp-suave);
-    font-size: .92rem;
-}
-
-/* De 0 a 10 são onze notas: numa fileira só elas ficam pequenas demais para
-   o polegar, então quebram em duas, com a mesma largura. */
-.vp-opcoes {
-    display: grid;
-    grid-template-columns: repeat(var(--vp-col-m, 6), minmax(0, 1fr));
-    gap: 8px;
-}
-
-@media (min-width: 520px) {
-    .vp-opcoes {
-        grid-template-columns: repeat(var(--vp-col, 11), minmax(0, 1fr));
-        gap: 6px;
-    }
-}
-
-.vp-opcoes label {
-    position: relative;
-    display: block;
-    cursor: pointer;
-}
-
-.vp-opcoes input {
-    position: absolute;
-    inset: 0;
-    opacity: 0;
-    margin: 0;
-}
-
-.vp-opcoes span {
+/* O círculo da direita: vazio até a escolha, cheio com o ✓ depois. */
+.vp-marca {
     display: grid;
     place-items: center;
-    height: 48px;
-    border: 1px solid var(--vp-borda);
-    border-radius: 12px;
-    color: var(--vp-texto);
-    background: rgba(255, 255, 255, .04);
-    font-size: 1.05rem;
-    font-weight: 800;
-    font-variant-numeric: tabular-nums;
-    transition: background-color .15s ease, color .15s ease, transform .15s ease, box-shadow .15s ease;
+    width: 28px;
+    height: 28px;
+    border: 2px solid var(--vp-borda);
+    border-radius: 50%;
+    color: transparent;
+    font-size: .9rem;
+    font-weight: 900;
+    transition: background-color .15s ease, border-color .15s ease, transform .15s ease;
 }
 
-.vp-opcoes label:hover span {
-    border-color: var(--vp-suave);
+.vp-marca::after {
+    content: "✓";
 }
 
-/* O foco: a nota escolhida acende. */
-.vp-opcoes input:checked + span {
+.vp-opcao input:checked ~ .vp-marca {
     border-color: var(--vp-foco);
-    color: var(--vp-noite);
+    color: var(--vp-sobre-foco);
     background: var(--vp-foco);
-    box-shadow: 0 0 0 4px rgba(255, 196, 0, .22), 0 6px 18px rgba(255, 196, 0, .28);
-    transform: scale(1.06);
+    transform: scale(1.08);
 }
 
-.vp-opcoes input:focus-visible + span {
-    outline: 3px solid #fff;
+/* O foco de luz: a apresentação escolhida acende. */
+.vp-opcao:has(input:checked) {
+    border-color: var(--vp-foco);
+    background: rgba(var(--vp-foco-rgb), .16);
+    box-shadow: 0 0 0 3px rgba(var(--vp-foco-rgb), .25), 0 10px 28px rgba(var(--vp-foco-rgb), .18);
+}
+
+.vp-opcao:has(input:focus-visible) {
+    outline: 3px solid var(--vp-texto);
     outline-offset: 2px;
 }
 
-.vp-numero {
-    width: 100%;
-    max-width: 220px;
-    height: 52px;
-    padding: 0 16px;
-    border: 1px solid var(--vp-borda);
-    border-radius: 12px;
-    color: var(--vp-texto);
-    background: rgba(255, 255, 255, .06);
-    font-size: 1.3rem;
-    font-weight: 800;
+/* O botão fica preso ao pé da tela enquanto a lista rola: a escolha pode
+   estar no fim da lista, e o botão não pode sumir junto. */
+.vp-barra-voto {
+    position: sticky;
+    bottom: 0;
+    z-index: 5;
+    margin: 0 -16px;
+    padding: 18px 16px calc(16px + env(safe-area-inset-bottom));
+    background: linear-gradient(180deg, rgba(var(--vp-noite-rgb), 0), rgba(var(--vp-noite-rgb), .92) 40%);
 }
 
-.vp-numero::placeholder {
-    color: var(--vp-suave);
-    font-weight: 600;
-}
-
-.vp-numero:focus {
-    border-color: var(--vp-foco);
-    outline: none;
-    box-shadow: 0 0 0 4px rgba(255, 196, 0, .22);
-}
-
-/* O botão só "acende" quando todas as notas estão escolhidas. Antes disso
-   fica apagado — mas clicável: se o JavaScript falhar, o navegador ainda
-   avisa o que falta pelo required dos campos. */
 .vp-enviar {
     width: 100%;
-    min-height: 54px;
+    min-height: 56px;
+    padding: 0 18px;
     border: 0;
     border-radius: 14px;
-    color: var(--vp-noite);
+    color: var(--vp-sobre-foco);
     background: var(--vp-foco);
     font: inherit;
     font-size: 1.05rem;
     font-weight: 900;
     cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     transition: background-color .15s ease, color .15s ease;
 }
 
 .vp-enviar.incompleto {
     color: var(--vp-suave);
-    background: rgba(255, 255, 255, .08);
+    background: var(--vp-cartao-forte);
 }
 
 .vp-enviar:focus-visible {
-    outline: 3px solid #fff;
+    outline: 3px solid var(--vp-texto);
     outline-offset: 3px;
+}
+
+/* --- Depois do voto -------------------------------------------------------- */
+.vp-votou {
+    display: grid;
+    justify-items: center;
+    gap: 6px;
+    margin-top: 12px;
+    padding: 28px 20px 26px;
+    border: 1px solid var(--vp-borda);
+    border-radius: 20px;
+    background: var(--vp-cartao);
+    text-align: center;
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+}
+
+.vp-votou p {
+    margin: 0;
+    color: var(--vp-suave);
+}
+
+.vp-votou strong {
+    color: var(--vp-texto);
+    font-size: 1.5rem;
+    font-weight: 900;
+    line-height: 1.15;
+}
+
+.vp-votou small {
+    color: var(--vp-suave);
+}
+
+.vp-votou .vp-votou-obrigado {
+    margin-top: 10px;
+}
+
+.vp-check {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    color: #fff;
+    background: var(--vp-ok);
+    font-weight: 900;
+}
+
+.vp-check.grande {
+    width: 56px;
+    height: 56px;
+    margin-bottom: 8px;
+    font-size: 1.6rem;
 }
 
 /* --- Rodapé ---------------------------------------------------------------- */
@@ -4263,30 +4233,24 @@ td {
 }
 
 .vp-rodape .sesc-logo.small {
-    color: #fff;
+    color: var(--vp-texto);
     font-size: 34px;
     opacity: .8;
 }
 
 .vp-rodape .sesc-logo.small::before {
+    border-top-color: var(--vp-foco);
     border-top-width: 6px;
 }
 
-.vp-hero-logo.sesc-logo.small {
-    font-size: 54px;
-}
-
-.vp-hero-logo.sesc-logo.small::before {
-    border-top-width: 9px;
-}
-
 @media (prefers-reduced-motion: reduce) {
-    .vp-opcoes span,
+    .vp-opcao,
+    .vp-marca,
     .vp-enviar {
         transition: none;
     }
 
-    .vp-opcoes input:checked + span {
+    .vp-opcao input:checked ~ .vp-marca {
         transform: none;
     }
 
@@ -4295,28 +4259,157 @@ td {
     }
 }
 
-/* --- Painel do administrador: imagem de capa ------------------------------- */
-.vp-capa-painel {
+/* --- Painel do administrador: aparência e imagens --------------------------- */
+.vp-aparencia {
     display: grid;
-    gap: var(--esp-2);
-    margin-top: var(--esp-4);
+    gap: var(--esp-4);
+}
+
+.vp-aparencia-cabeca {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--esp-3);
+}
+
+.vp-aparencia-cabeca h2 {
+    margin: 0;
+}
+
+.vp-aparencia-grade {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(220px, .8fr);
+    gap: var(--esp-5);
+    align-items: start;
+}
+
+.vp-cores {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--esp-3);
+}
+
+.vp-cores input[type="color"] {
+    width: 100%;
+    height: 48px;
+    padding: 4px;
+    cursor: pointer;
+}
+
+.vp-aparencia-form input[type="range"] {
+    width: 100%;
+    accent-color: var(--sesc-blue);
+}
+
+/* Prévia: uma miniatura da página com as mesmas variáveis do tema. */
+.vp-previa {
+    display: grid;
+    gap: 6px;
+    justify-items: center;
+}
+
+.vp-previa > small {
+    color: var(--sesc-muted);
+}
+
+.vp-previa-tela {
+    display: grid;
+    gap: 8px;
+    width: 100%;
+    max-width: 280px;
+    padding: 16px 14px;
+    border-radius: 18px;
+    color: var(--vp-texto);
+    background: var(--vp-noite);
+    box-shadow: 0 10px 30px rgba(0, 20, 60, .2);
+}
+
+.vp-previa-tela.com-fundo {
+    background:
+        linear-gradient(rgba(var(--vp-noite-rgb), var(--vp-sobreposicao)), rgba(var(--vp-noite-rgb), var(--vp-sobreposicao))),
+        var(--vp-fundo-img) center / cover no-repeat;
+}
+
+.vp-previa-pergunta {
+    margin: 0 0 4px;
+    font-weight: 900;
+    line-height: 1.2;
+}
+
+.vp-previa-op {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 10px;
+    border: 1px solid var(--vp-borda);
+    border-radius: 12px;
+    background: var(--vp-cartao);
+    font-size: .85rem;
+    font-weight: 700;
+}
+
+.vp-previa-op b {
+    color: var(--vp-foco);
+    font-weight: 900;
+}
+
+.vp-previa-op i {
+    width: 16px;
+    height: 16px;
+    border: 2px solid var(--vp-borda);
+    border-radius: 50%;
+}
+
+.vp-previa-op.escolhida {
+    border-color: var(--vp-foco);
+    background: rgba(var(--vp-foco-rgb), .16);
+}
+
+.vp-previa-op.escolhida i {
+    border-color: var(--vp-foco);
+    background: var(--vp-foco);
+}
+
+.vp-previa-botao {
+    margin-top: 4px;
+    padding: 10px;
+    border-radius: 10px;
+    color: var(--vp-sobre-foco);
+    background: var(--vp-foco);
+    font-size: .85rem;
+    font-weight: 900;
+    text-align: center;
+}
+
+.vp-imagens {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--esp-5);
     padding-top: var(--esp-4);
     border-top: 1px solid #e5e9f1;
 }
 
-.vp-capa-painel h3 {
+.vp-imagem-bloco {
+    display: grid;
+    align-content: start;
+    gap: var(--esp-2);
+}
+
+.vp-imagem-bloco h3 {
     margin: 0;
     color: var(--sesc-blue);
 }
 
-.vp-capa-painel p {
+.vp-imagem-bloco p {
     margin: 0;
     font-size: var(--t-sm);
 }
 
 .vp-capa-previa {
     width: 100%;
-    max-height: 200px;
+    max-height: 180px;
     border-radius: 10px;
     object-fit: cover;
 }
@@ -4329,12 +4422,19 @@ td {
 }
 
 .vp-capa-form input[type="file"] {
-    flex: 1 1 220px;
+    flex: 1 1 200px;
     min-width: 0;
 }
 
 .vp-novo-link {
     margin-top: var(--esp-2);
+}
+
+@media (max-width: 760px) {
+    .vp-aparencia-grade,
+    .vp-imagens {
+        grid-template-columns: 1fr;
+    }
 }
 
 /* Pontos por colocação no voto do público */

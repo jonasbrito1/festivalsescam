@@ -19,32 +19,27 @@
  *    Evento sem configuração continua em 'media': nenhum resultado já
  *    apurado muda sozinho. Evento criado daqui para frente nasce em 'soma'.
  *
- * 2. VOTAÇÃO DO PÚBLICO, opcional por evento: critérios próprios e um link
- *    aberto (?page=votar&t=...). O voto do público NÃO entra como nota: ele
- *    forma uma CLASSIFICAÇÃO do público, e cada colocação vale os pontos que
- *    o administrador definiu (ex.: 1º = 30, 2º = 20, 3º = 10). Esses pontos
- *    são somados aos dos jurados. Quem fica abaixo da última colocação
- *    pontuada, ou não recebe voto nenhum, ganha 0 do público.
+ * 2. VOTAÇÃO DO PÚBLICO, opcional por evento, por um link aberto
+ *    (?page=votar&t=...). Cada pessoa escolhe UM participante — cada escolha
+ *    é um voto. Os votos formam o RANKING DO PÚBLICO, e cada colocação vale
+ *    os pontos que o administrador definiu (ex.: 1º = 10, 2º = 5, 3º = 2),
+ *    somados aos dos jurados. Quem fica abaixo da última colocação pontuada,
+ *    ou não recebe voto nenhum, ganha 0 do público.
  *
- *    A classificação do público pode ser por:
- *      soma    total de pontos que o público deu (mais votos e notas mais
- *              altas sobem) — o "mais votado"
- *      media   média das notas (cada pessoa pesa igual, não importa quantas
- *              votaram em cada participante)
- *
- *    Empate divide a colocação: dois empatados em 1º levam os pontos do 1º,
- *    e o seguinte é 3º — como no resultado final (lib/resultado.php).
+ *    Empate em número de votos divide a colocação: dois empatados em 1º
+ *    levam os pontos do 1º, e o seguinte é 3º — como no resultado final
+ *    (lib/resultado.php).
  *
  * ---------------------------------------------------------------------------
  * UM VOTO POR APARELHO
  * ---------------------------------------------------------------------------
- * Cada cédula (um voto do público em UM participante) guarda:
+ * Cada cédula (o voto de uma pessoa no evento) guarda:
  *   - dispositivo: um identificador aleatório gravado num cookie de um ano.
- *     Sempre conferido. Barra o voto repetido no mesmo navegador.
+ *     Sempre conferido. Barra o segundo voto no mesmo navegador.
  *   - ip_trava: o IP (em hash) quando o evento restringe por IP. Barra o
- *     voto repetido de qualquer navegador na mesma conexão.
- * As duas travas são chaves únicas no banco: dois cliques simultâneos não
- * passam juntos.
+ *     segundo voto de qualquer navegador na mesma conexão.
+ * A partir da migração 18 as duas travas são chaves únicas por evento no
+ * banco: dois toques simultâneos não passam juntos.
  *
  * Restringir por IP tem custo: num teatro, centenas de pessoas no mesmo
  * Wi-Fi saem pelo MESMO IP, e só a primeira conseguiria votar. A tela de
@@ -53,8 +48,9 @@
  * ---------------------------------------------------------------------------
  * ONDE OS DADOS FICAM
  * ---------------------------------------------------------------------------
- * Modo MySQL primário: tabelas de sql/mysql_17_voto_publico.sql.
+ * Modo MySQL primário: tabelas de sql/mysql_17 e sql/mysql_18.
  * Demais modos: data/voto_publico.json, com trava de arquivo.
+ * Imagens (capa e fundo): public/uploads/votacao/, uma de cada por evento.
  *
  * Nada aqui passa por db_write(): o voto do público é escrita dirigida, como
  * a nota do jurado. Centenas de pessoas votando ao mesmo tempo não podem
@@ -71,6 +67,15 @@ const VP_MODOS_CALCULO = [
 
 const VP_COOKIE = 'festival_vp';
 
+/** Aparência padrão da página do público: as cores do Sesc. */
+const VP_APARENCIA_PADRAO = [
+    'pergunta'     => 'Qual foi a melhor apresentação?',
+    'cor_fundo'    => '#001a52',
+    'cor_destaque' => '#ffc400',
+    // Quanto a cor de fundo cobre a imagem de fundo (0 = imagem pura, 90 = quase só a cor).
+    'sobreposicao' => 65,
+];
+
 function vp_config_padrao(): array
 {
     return [
@@ -78,17 +83,12 @@ function vp_config_padrao(): array
         'publico_ativo'         => false,
         'publico_aberto'        => false,
         'publico_token'         => null,
-        'publico_restringir_ip' => true,
-        // Pontos por colocação no voto do público: [1º, 2º, 3º, ...]
+        'publico_restringir_ip' => false,
+        // Pontos por colocação no ranking do público: [1º, 2º, 3º, ...]
         'publico_pontos'        => [],
-        'publico_classificar'   => 'soma',
+        'publico_aparencia'     => VP_APARENCIA_PADRAO,
     ];
 }
-
-const VP_CLASSIFICAR = [
-    'soma'  => 'Total de pontos recebidos (o mais votado)',
-    'media' => 'Média das notas (cada pessoa pesa igual)',
-];
 
 /** "30,20,10" (banco) ⇄ [30.0, 20.0, 10.0]. Zeros à direita saem. */
 function vp_pontos_de_texto(?string $texto): array
@@ -111,6 +111,21 @@ function vp_pontos_de_texto(?string $texto): array
 function vp_pontos_para_texto(array $lista): string
 {
     return implode(',', array_map(static fn($n) => rtrim(rtrim(number_format((float)$n, 2, '.', ''), '0'), '.'), $lista));
+}
+
+/** Aparência validada: cor só em #rrggbb, pergunta curta, sobreposição 0–90. */
+function vp_aparencia_normalizar($dados): array
+{
+    $dados = is_array($dados) ? $dados : [];
+    $cor = static fn($v, string $padrao): string => is_string($v) && preg_match('/^#[0-9a-fA-F]{6}$/', $v) ? strtolower($v) : $padrao;
+    $pergunta = trim((string)($dados['pergunta'] ?? ''));
+
+    return [
+        'pergunta'     => $pergunta !== '' ? mb_substr($pergunta, 0, 160) : VP_APARENCIA_PADRAO['pergunta'],
+        'cor_fundo'    => $cor($dados['cor_fundo'] ?? null, VP_APARENCIA_PADRAO['cor_fundo']),
+        'cor_destaque' => $cor($dados['cor_destaque'] ?? null, VP_APARENCIA_PADRAO['cor_destaque']),
+        'sobreposicao' => max(0, min(90, (int)($dados['sobreposicao'] ?? VP_APARENCIA_PADRAO['sobreposicao']))),
+    ];
 }
 
 /* ===========================================================================
@@ -145,19 +160,49 @@ function vp_tabelas_ok(): bool
         $n = $pdo->query(
             "SELECT COUNT(*) FROM information_schema.TABLES
               WHERE TABLE_SCHEMA = DATABASE()
-                AND TABLE_NAME IN ('evento_apuracao', 'publico_criterios', 'publico_cedulas', 'publico_notas')"
+                AND TABLE_NAME IN ('evento_apuracao', 'publico_cedulas')"
         )->fetchColumn();
-        /* As duas colunas da pontuação por colocação entraram depois na mesma
-           migração: um banco que rodou a versão anterior dela precisa rodar
-           de novo (é segura de repetir). */
         $colunas = $pdo->query(
             "SELECT COUNT(*) FROM information_schema.COLUMNS
               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'evento_apuracao'
-                AND COLUMN_NAME IN ('publico_pontos', 'publico_classificar')"
+                AND COLUMN_NAME = 'publico_pontos'"
         )->fetchColumn();
-        $ok = (int)$n === 4 && (int)$colunas === 2;
+        $ok = (int)$n === 2 && (int)$colunas === 1;
     } catch (Throwable $e) {
         error_log('vp_tabelas_ok: ' . $e->getMessage());
+        $ok = false;
+    }
+
+    return $ok;
+}
+
+/**
+ * A migração 18 (aparência da página) já foi aplicada?
+ *
+ * Separada da checagem acima de propósito: sem a 18, o cálculo da nota e a
+ * votação continuam funcionando; só a aparência personalizada não é gravada.
+ */
+function vp_aparencia_ok(): bool
+{
+    static $ok = null;
+
+    if ($ok !== null) {
+        return $ok;
+    }
+
+    $pdo = vp_pdo();
+    if (!$pdo) {
+        return $ok = vp_tabelas_ok();
+    }
+
+    try {
+        $ok = (int)$pdo->query(
+            "SELECT COUNT(*) FROM information_schema.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'evento_apuracao'
+                AND COLUMN_NAME = 'publico_aparencia'"
+        )->fetchColumn() === 1;
+    } catch (Throwable $e) {
+        error_log('vp_aparencia_ok: ' . $e->getMessage());
         $ok = false;
     }
 
@@ -171,7 +216,7 @@ function vp_arquivo(): string
 
 function vp_arquivo_vazio(): array
 {
-    return ['config' => [], 'criterios' => [], 'cedulas' => [], 'seq' => ['criterios' => 0, 'cedulas' => 0]];
+    return ['config' => [], 'cedulas' => [], 'seq' => ['cedulas' => 0]];
 }
 
 /** Leitura simples do arquivo (sem trava de escrita). */
@@ -260,13 +305,15 @@ function vp_config(int $eventId): array
                 'publico_token'         => $r['publico_token'] !== null ? (string)$r['publico_token'] : null,
                 'publico_restringir_ip' => (bool)$r['publico_restringir_ip'],
                 'publico_pontos'        => vp_pontos_de_texto($r['publico_pontos'] ?? ''),
-                'publico_classificar'   => isset(VP_CLASSIFICAR[$r['publico_classificar'] ?? '']) ? (string)$r['publico_classificar'] : 'soma',
+                'publico_aparencia'     => vp_aparencia_normalizar(json_decode((string)($r['publico_aparencia'] ?? ''), true)),
             ];
         }
 
         $guardado = vp_arquivo_ler()['config'][(string)$eventId] ?? [];
+        $cfg = array_intersect_key($guardado, $padrao) + $padrao;
+        $cfg['publico_aparencia'] = vp_aparencia_normalizar($cfg['publico_aparencia']);
 
-        return array_intersect_key($guardado, $padrao) + $padrao;
+        return $cfg;
     });
 }
 
@@ -282,27 +329,15 @@ function vp_salvar_config(int $eventId, array $mudancas): bool
     if (!isset(VP_MODOS_CALCULO[$nova['modo_calculo']])) {
         $nova['modo_calculo'] = 'media';
     }
-    if (!isset(VP_CLASSIFICAR[$nova['publico_classificar']])) {
-        $nova['publico_classificar'] = 'soma';
-    }
     $nova['publico_pontos'] = vp_pontos_de_texto(vp_pontos_para_texto((array)$nova['publico_pontos']));
+    $nova['publico_aparencia'] = vp_aparencia_normalizar($nova['publico_aparencia']);
 
     $pdo = vp_pdo();
 
     try {
         if ($pdo) {
-            $pdo->prepare(
-                'INSERT INTO evento_apuracao
-                    (event_id, modo_calculo, publico_ativo, publico_aberto, publico_token, publico_restringir_ip,
-                     publico_pontos, publico_classificar)
-                 VALUES (:id, :modo, :ativo, :aberto, :token, :ip, :pontos, :classificar)
-                 ON DUPLICATE KEY UPDATE modo_calculo = VALUES(modo_calculo),
-                     publico_ativo = VALUES(publico_ativo), publico_aberto = VALUES(publico_aberto),
-                     publico_token = VALUES(publico_token),
-                     publico_restringir_ip = VALUES(publico_restringir_ip),
-                     publico_pontos = VALUES(publico_pontos),
-                     publico_classificar = VALUES(publico_classificar)'
-            )->execute([
+            $comAparencia = vp_aparencia_ok();
+            $params = [
                 ':id'     => $eventId,
                 ':modo'   => $nova['modo_calculo'],
                 ':ativo'  => $nova['publico_ativo'] ? 1 : 0,
@@ -310,8 +345,23 @@ function vp_salvar_config(int $eventId, array $mudancas): bool
                 ':token'  => $nova['publico_token'],
                 ':ip'     => $nova['publico_restringir_ip'] ? 1 : 0,
                 ':pontos' => vp_pontos_para_texto($nova['publico_pontos']),
-                ':classificar' => $nova['publico_classificar'],
-            ]);
+            ];
+            if ($comAparencia) {
+                $params[':aparencia'] = json_encode($nova['publico_aparencia'], JSON_UNESCAPED_UNICODE);
+            }
+
+            $pdo->prepare(
+                'INSERT INTO evento_apuracao
+                    (event_id, modo_calculo, publico_ativo, publico_aberto, publico_token, publico_restringir_ip,
+                     publico_pontos' . ($comAparencia ? ', publico_aparencia' : '') . ')
+                 VALUES (:id, :modo, :ativo, :aberto, :token, :ip, :pontos' . ($comAparencia ? ', :aparencia' : '') . ')
+                 ON DUPLICATE KEY UPDATE modo_calculo = VALUES(modo_calculo),
+                     publico_ativo = VALUES(publico_ativo), publico_aberto = VALUES(publico_aberto),
+                     publico_token = VALUES(publico_token),
+                     publico_restringir_ip = VALUES(publico_restringir_ip),
+                     publico_pontos = VALUES(publico_pontos)'
+                     . ($comAparencia ? ', publico_aparencia = VALUES(publico_aparencia)' : '')
+            )->execute($params);
         } else {
             vp_arquivo_transacao(static function (array &$d) use ($eventId, $nova): void {
                 $d['config'][(string)$eventId] = $nova;
@@ -378,161 +428,6 @@ function vp_rotulo_nota(int $eventId): string
 }
 
 /* ===========================================================================
- * CRITÉRIOS DO PÚBLICO
- * ======================================================================== */
-
-function vp_criterios(int $eventId): array
-{
-    return cache_lembrar('vp:criterios:' . $eventId, static function () use ($eventId): array {
-        if (!vp_tabelas_ok()) {
-            return [];
-        }
-
-        $pdo = vp_pdo();
-        $lista = [];
-
-        if ($pdo) {
-            try {
-                $sql = $pdo->prepare('SELECT * FROM publico_criterios WHERE event_id = ? ORDER BY ordem, id');
-                $sql->execute([$eventId]);
-                $lista = $sql->fetchAll();
-            } catch (Throwable $e) {
-                error_log('vp_criterios: ' . $e->getMessage());
-
-                return [];
-            }
-        } else {
-            foreach (vp_arquivo_ler()['criterios'] as $c) {
-                if ((int)$c['event_id'] === $eventId) {
-                    $lista[] = $c;
-                }
-            }
-            usort($lista, static fn($a, $b) => ((int)$a['ordem'] <=> (int)$b['ordem']) ?: ((int)$a['id'] <=> (int)$b['id']));
-        }
-
-        return array_map(static fn(array $c): array => [
-            'id'          => (int)$c['id'],
-            'event_id'    => (int)$c['event_id'],
-            'nome'        => (string)$c['nome'],
-            'descricao'   => (string)($c['descricao'] ?? ''),
-            'nota_minima' => (float)$c['nota_minima'],
-            'nota_maxima' => (float)$c['nota_maxima'],
-            'passo'       => (float)$c['passo'],
-            'ordem'       => (int)$c['ordem'],
-        ], $lista);
-    });
-}
-
-/**
- * Cria (id null) ou altera um critério do público.
- *
- * @return string|null mensagem de erro, ou null se gravou
- */
-function vp_criterio_gravar(int $eventId, ?int $id, array $c): ?string
-{
-    if (!vp_tabelas_ok()) {
-        return 'O banco ainda não tem as tabelas da votação do público. Aplique sql/mysql_17_voto_publico.sql.';
-    }
-
-    $nome = trim((string)($c['nome'] ?? ''));
-    if ($nome === '') {
-        return 'Dê um nome ao critério.';
-    }
-
-    $erro = criterio_faixa_erro((float)$c['nota_minima'], (float)$c['nota_maxima'], (float)$c['passo']);
-    if ($erro !== null) {
-        return $erro;
-    }
-
-    $linha = [
-        'event_id'    => $eventId,
-        'nome'        => mb_substr($nome, 0, 120),
-        'descricao'   => mb_substr(trim((string)($c['descricao'] ?? '')), 0, 255),
-        'nota_minima' => (float)$c['nota_minima'],
-        'nota_maxima' => (float)$c['nota_maxima'],
-        'passo'       => (float)$c['passo'],
-        'ordem'       => (int)($c['ordem'] ?? 0),
-    ];
-
-    $pdo = vp_pdo();
-
-    try {
-        if ($pdo) {
-            if ($id === null) {
-                $pdo->prepare(
-                    'INSERT INTO publico_criterios (event_id, nome, descricao, nota_minima, nota_maxima, passo, ordem)
-                     VALUES (:event_id, :nome, :descricao, :nota_minima, :nota_maxima, :passo, :ordem)'
-                )->execute($linha);
-            } else {
-                $pdo->prepare(
-                    'UPDATE publico_criterios SET nome = :nome, descricao = :descricao,
-                            nota_minima = :nota_minima, nota_maxima = :nota_maxima,
-                            passo = :passo, ordem = :ordem
-                      WHERE id = :id AND event_id = :event_id'
-                )->execute($linha + ['id' => $id]);
-            }
-        } else {
-            vp_arquivo_transacao(static function (array &$d) use ($id, $linha): void {
-                if ($id === null) {
-                    $d['seq']['criterios'] = (int)($d['seq']['criterios'] ?? 0) + 1;
-                    $d['criterios'][] = ['id' => $d['seq']['criterios']] + $linha;
-
-                    return;
-                }
-
-                foreach ($d['criterios'] as $i => $c) {
-                    if ((int)$c['id'] === $id && (int)$c['event_id'] === $linha['event_id']) {
-                        $d['criterios'][$i] = ['id' => $id] + $linha;
-                    }
-                }
-            });
-        }
-    } catch (Throwable $e) {
-        error_log('vp_criterio_gravar: ' . $e->getMessage());
-
-        return 'Falha ao gravar o critério.';
-    }
-
-    cache_esquecer('vp');
-
-    return null;
-}
-
-function vp_criterio_excluir(int $eventId, int $id): bool
-{
-    if (!vp_tabelas_ok()) {
-        return false;
-    }
-
-    $pdo = vp_pdo();
-
-    try {
-        if ($pdo) {
-            // As notas deste critério saem junto (ON DELETE CASCADE).
-            $pdo->prepare('DELETE FROM publico_criterios WHERE id = ? AND event_id = ?')->execute([$id, $eventId]);
-        } else {
-            vp_arquivo_transacao(static function (array &$d) use ($eventId, $id): void {
-                $d['criterios'] = array_values(array_filter(
-                    $d['criterios'],
-                    static fn($c) => !((int)$c['id'] === $id && (int)$c['event_id'] === $eventId)
-                ));
-                foreach ($d['cedulas'] as $i => $c) {
-                    unset($d['cedulas'][$i]['notas'][(string)$id]);
-                }
-            });
-        }
-    } catch (Throwable $e) {
-        error_log('vp_criterio_excluir: ' . $e->getMessage());
-
-        return false;
-    }
-
-    cache_esquecer('vp');
-
-    return true;
-}
-
-/* ===========================================================================
  * VOTO
  * ======================================================================== */
 
@@ -585,97 +480,81 @@ function vp_hash_ip(int $eventId, string $ip): string
 }
 
 /**
- * Participantes em que este aparelho (ou este IP, se o evento restringe) já
- * votou.
- *
- * @return array<int,true>
+ * Em quem este aparelho (ou este IP, se o evento restringe) já votou neste
+ * evento. null = ainda não votou.
  */
-function vp_ja_votados(int $eventId, string $dispositivo, string $ipHash): array
+function vp_voto_do_aparelho(int $eventId, string $dispositivo, string $ipHash): ?int
 {
     if (!vp_tabelas_ok()) {
-        return [];
+        return null;
     }
 
     $restringirIp = vp_config($eventId)['publico_restringir_ip'];
     $pdo = vp_pdo();
-    $saida = [];
 
     if ($pdo) {
         try {
             $sql = $pdo->prepare(
-                'SELECT DISTINCT participant_id FROM publico_cedulas
-                  WHERE event_id = :e AND (dispositivo = :d OR (:restringe = 1 AND ip_trava = :ip))'
+                'SELECT participant_id FROM publico_cedulas
+                  WHERE event_id = :e AND (dispositivo = :d OR (:restringe = 1 AND ip_trava = :ip))
+                  ORDER BY id LIMIT 1'
             );
             $sql->execute([':e' => $eventId, ':d' => $dispositivo, ':restringe' => $restringirIp ? 1 : 0, ':ip' => $ipHash]);
-            foreach ($sql->fetchAll(PDO::FETCH_COLUMN) as $pid) {
-                $saida[(int)$pid] = true;
-            }
-        } catch (Throwable $e) {
-            error_log('vp_ja_votados: ' . $e->getMessage());
-        }
+            $pid = $sql->fetchColumn();
 
-        return $saida;
+            return $pid === false ? null : (int)$pid;
+        } catch (Throwable $e) {
+            error_log('vp_voto_do_aparelho: ' . $e->getMessage());
+
+            return null;
+        }
     }
 
     foreach (vp_arquivo_ler()['cedulas'] as $c) {
-        if ((int)$c['event_id'] !== $eventId) {
-            continue;
-        }
-        if ($c['dispositivo'] === $dispositivo || ($restringirIp && ($c['ip_trava'] ?? null) === $ipHash)) {
-            $saida[(int)$c['participant_id']] = true;
+        if ((int)$c['event_id'] === $eventId
+            && ($c['dispositivo'] === $dispositivo || ($restringirIp && ($c['ip_trava'] ?? null) === $ipHash))) {
+            return (int)$c['participant_id'];
         }
     }
 
-    return $saida;
+    return null;
 }
 
 /**
- * Registra o voto do público em UM participante.
+ * Registra o voto de uma pessoa: UM participante por evento.
  *
- * @param array<int|string,mixed> $notasBrutas [criterio_id => nota digitada]
  * @return array{ok:bool, mensagem:string}
  */
-function vp_votar(int $eventId, int $participantId, array $notasBrutas, string $dispositivo, string $ipHash): array
+function vp_votar(int $eventId, int $participantId, string $dispositivo, string $ipHash): array
 {
     $cfg = vp_config($eventId);
 
     if (!$cfg['publico_ativo'] || !$cfg['publico_aberto']) {
-        return ['ok' => false, 'mensagem' => 'A votação do público está encerrada.'];
-    }
-
-    $criterios = vp_criterios($eventId);
-    if ($criterios === []) {
-        return ['ok' => false, 'mensagem' => 'A votação ainda não tem critérios.'];
-    }
-
-    /* Todos os critérios são obrigatórios e conferidos na faixa de cada um:
-       o formulário pode ser contornado; o que vale é o que entra no banco. */
-    $notas = [];
-    foreach ($criterios as $c) {
-        $bruto = trim(str_replace(',', '.', (string)($notasBrutas[$c['id']] ?? '')));
-
-        if ($bruto === '' || !is_numeric($bruto)) {
-            return ['ok' => false, 'mensagem' => 'Dê uma nota em "' . $c['nome'] . '".'];
-        }
-
-        $nota = (float)$bruto;
-        $folga = max($c['passo'], 0.01) / 2;
-
-        if ($nota < $c['nota_minima'] - $folga || $nota > $c['nota_maxima'] + $folga) {
-            return ['ok' => false, 'mensagem' => 'A nota de "' . $c['nome'] . '" vai de '
-                . numero_pt($c['nota_minima']) . ' a ' . numero_pt($c['nota_maxima']) . '.'];
-        }
-
-        $notas[$c['id']] = round($nota, 2);
+        return ['ok' => false, 'mensagem' => 'A votação do público está fechada.'];
     }
 
     $ipTrava = $cfg['publico_restringir_ip'] ? $ipHash : null;
-    $jaVotou = ['ok' => false, 'mensagem' => 'Já existe um voto deste aparelho (ou desta rede) para este participante. Obrigado!'];
+    $jaVotou = ['ok' => false, 'mensagem' => 'Este celular já votou neste evento. Obrigado!'];
     $pdo = vp_pdo();
 
     try {
         if ($pdo) {
             $pdo->beginTransaction();
+
+            /* Antes da migração 18 não há chave única por evento; esta leitura
+               com trava é o que segura o segundo voto. Depois dela, a chave
+               única é a garantia, e esta leitura só poupa um erro. */
+            $sql = $pdo->prepare(
+                'SELECT id FROM publico_cedulas
+                  WHERE event_id = :e AND (dispositivo = :d OR (:restringe = 1 AND ip_trava = :ip))
+                  LIMIT 1 FOR UPDATE'
+            );
+            $sql->execute([':e' => $eventId, ':d' => $dispositivo, ':restringe' => $ipTrava !== null ? 1 : 0, ':ip' => (string)$ipTrava]);
+            if ($sql->fetchColumn() !== false) {
+                $pdo->rollBack();
+
+                return $jaVotou;
+            }
 
             try {
                 $pdo->prepare(
@@ -685,7 +564,7 @@ function vp_votar(int $eventId, int $participantId, array $notasBrutas, string $
             } catch (PDOException $e) {
                 $pdo->rollBack();
 
-                // 1062 = chave única: este aparelho/IP já votou neste participante.
+                // 1062 = chave única: este aparelho/IP já votou.
                 if ((int)($e->errorInfo[1] ?? 0) === 1062) {
                     return $jaVotou;
                 }
@@ -693,17 +572,11 @@ function vp_votar(int $eventId, int $participantId, array $notasBrutas, string $
                 throw $e;
             }
 
-            $cedula = (int)$pdo->lastInsertId();
-            $sql = $pdo->prepare('INSERT INTO publico_notas (cedula_id, criterio_id, score) VALUES (?, ?, ?)');
-            foreach ($notas as $criterioId => $nota) {
-                $sql->execute([$cedula, $criterioId, $nota]);
-            }
-
             $pdo->commit();
         } else {
-            $gravou = vp_arquivo_transacao(static function (array &$d) use ($eventId, $participantId, $dispositivo, $ipHash, $ipTrava, $notas): bool {
+            $gravou = vp_arquivo_transacao(static function (array &$d) use ($eventId, $participantId, $dispositivo, $ipHash, $ipTrava): bool {
                 foreach ($d['cedulas'] as $c) {
-                    if ((int)$c['event_id'] === $eventId && (int)$c['participant_id'] === $participantId
+                    if ((int)$c['event_id'] === $eventId
                         && ($c['dispositivo'] === $dispositivo || ($ipTrava !== null && ($c['ip_trava'] ?? null) === $ipTrava))) {
                         return false;
                     }
@@ -718,7 +591,6 @@ function vp_votar(int $eventId, int $participantId, array $notasBrutas, string $
                     'ip_hash'        => $ipHash,
                     'ip_trava'       => $ipTrava,
                     'criado'         => date('c'),
-                    'notas'          => array_combine(array_map('strval', array_keys($notas)), array_values($notas)),
                 ];
 
                 return true;
@@ -742,7 +614,7 @@ function vp_votar(int $eventId, int $participantId, array $notasBrutas, string $
     return ['ok' => true, 'mensagem' => 'Voto registrado. Obrigado!'];
 }
 
-/** Apaga todos os votos do público do evento (critérios e link ficam). */
+/** Apaga todos os votos do público do evento (configuração e link ficam). */
 function vp_zerar_votos(int $eventId): bool
 {
     if (!vp_tabelas_ok()) {
@@ -771,45 +643,27 @@ function vp_zerar_votos(int $eventId): bool
 }
 
 /* ===========================================================================
- * APURAÇÃO DO PÚBLICO
+ * RANKING DO PÚBLICO
  * ======================================================================== */
 
 /**
- * Por participante: quantos votaram, a média de cada critério, a colocação
- * no voto do público e os pontos que essa colocação vale.
+ * Por participante: votos recebidos, a colocação no ranking do público e os
+ * pontos que essa colocação vale. Só entra quem recebeu ao menos um voto.
  *
- * @return array<int, array{votos:int, medias:array<int,float>, total:float,
- *                          media:float, metrica:float, posicao:int, pontos:float}>
+ * @return array<int, array{votos:int, percentual:float, posicao:int, pontos:float}>
  */
 function vp_resultado(int $eventId): array
 {
     return cache_lembrar('vp:resultado:' . $eventId, static function () use ($eventId): array {
-        $criterios = vp_criterios($eventId);
-        if ($criterios === []) {
+        if (!vp_tabelas_ok()) {
             return [];
         }
 
-        $validos = array_flip(array_column($criterios, 'id'));
-        $somas = [];     // [pid][cid] => soma
-        $contas = [];    // [pid][cid] => quantas notas
-        $votos = [];     // [pid] => cédulas
+        $votos = [];
         $pdo = vp_pdo();
 
         if ($pdo) {
             try {
-                $sql = $pdo->prepare(
-                    'SELECT c.participant_id, n.criterio_id, SUM(n.score) AS soma, COUNT(*) AS qtd
-                       FROM publico_cedulas c
-                       JOIN publico_notas n ON n.cedula_id = c.id
-                      WHERE c.event_id = ?
-                      GROUP BY c.participant_id, n.criterio_id'
-                );
-                $sql->execute([$eventId]);
-                foreach ($sql->fetchAll() as $r) {
-                    $somas[(int)$r['participant_id']][(int)$r['criterio_id']] = (float)$r['soma'];
-                    $contas[(int)$r['participant_id']][(int)$r['criterio_id']] = (int)$r['qtd'];
-                }
-
                 $sql = $pdo->prepare('SELECT participant_id, COUNT(*) FROM publico_cedulas WHERE event_id = ? GROUP BY participant_id');
                 $sql->execute([$eventId]);
                 foreach ($sql->fetchAll(PDO::FETCH_NUM) as [$pid, $qtd]) {
@@ -822,14 +676,9 @@ function vp_resultado(int $eventId): array
             }
         } else {
             foreach (vp_arquivo_ler()['cedulas'] as $c) {
-                if ((int)$c['event_id'] !== $eventId) {
-                    continue;
-                }
-                $pid = (int)$c['participant_id'];
-                $votos[$pid] = ($votos[$pid] ?? 0) + 1;
-                foreach (($c['notas'] ?? []) as $cid => $nota) {
-                    $somas[$pid][(int)$cid] = ($somas[$pid][(int)$cid] ?? 0.0) + (float)$nota;
-                    $contas[$pid][(int)$cid] = ($contas[$pid][(int)$cid] ?? 0) + 1;
+                if ((int)$c['event_id'] === $eventId) {
+                    $pid = (int)$c['participant_id'];
+                    $votos[$pid] = ($votos[$pid] ?? 0) + 1;
                 }
             }
         }
@@ -837,7 +686,6 @@ function vp_resultado(int $eventId): array
         /* Só conta quem ainda é participante ativo do evento: no modo arquivo
            não há chave estrangeira, e um participante excluído não pode
            ocupar uma colocação. */
-        $ativos = null;
         if (function_exists('db_read')) {
             $ativos = [];
             foreach (db_read()['participants'] ?? [] as $p) {
@@ -845,52 +693,32 @@ function vp_resultado(int $eventId): array
                     $ativos[(int)$p['id']] = true;
                 }
             }
+            $votos = array_intersect_key($votos, $ativos);
         }
 
-        $cfg = vp_config($eventId);
+        arsort($votos);
+        $total = array_sum($votos);
+        $pontos = vp_config($eventId)['publico_pontos'];
+
         $saida = [];
-        foreach ($votos as $pid => $qtd) {
-            if ($ativos !== null && !isset($ativos[$pid])) {
-                continue;
-            }
-
-            $medias = [];
-            $total = 0.0;
-            foreach ($somas[$pid] ?? [] as $cid => $soma) {
-                if (isset($validos[$cid]) && ($contas[$pid][$cid] ?? 0) > 0) {
-                    $medias[$cid] = $soma / $contas[$pid][$cid];
-                    $total += $soma;
-                }
-            }
-
-            $saida[$pid] = [
-                'votos'    => $qtd,
-                'medias'   => $medias,
-                'total'    => $total,              // soma de tudo que o público deu
-                'media'    => array_sum($medias),  // soma das médias por critério
-                'metrica'  => $cfg['publico_classificar'] === 'media' ? array_sum($medias) : $total,
-                'posicao'  => 0,
-                'pontos'   => 0.0,
-            ];
-        }
-
-        /* Classificação do público e os pontos de cada colocação. Empate
-           divide a colocação; o seguinte pula as posições ocupadas. */
-        uasort($saida, static fn($a, $b) => $b['metrica'] <=> $a['metrica']);
         $posicao = 0;
         $iguais = 0;
         $anterior = null;
-        foreach ($saida as $pid => $linha) {
-            if ($anterior !== null && abs($linha['metrica'] - $anterior) < 0.005) {
+        foreach ($votos as $pid => $qtd) {
+            if ($anterior !== null && $qtd === $anterior) {
                 $iguais++;
             } else {
                 $posicao += 1 + $iguais;
                 $iguais = 0;
             }
-            $anterior = $linha['metrica'];
+            $anterior = $qtd;
 
-            $saida[$pid]['posicao'] = $posicao;
-            $saida[$pid]['pontos'] = (float)($cfg['publico_pontos'][$posicao - 1] ?? 0.0);
+            $saida[$pid] = [
+                'votos'      => $qtd,
+                'percentual' => $total > 0 ? $qtd / $total * 100 : 0.0,
+                'posicao'    => $posicao,
+                'pontos'     => (float)($pontos[$posicao - 1] ?? 0.0),
+            ];
         }
 
         return $saida;
@@ -898,25 +726,35 @@ function vp_resultado(int $eventId): array
 }
 
 /* ===========================================================================
- * IMAGEM DE CAPA DA VOTAÇÃO
+ * IMAGENS DA PÁGINA DO PÚBLICO: CAPA E FUNDO
  *
- * Uma imagem por evento, no topo da página do público. Fica como arquivo em
- * public/uploads/votacao/ — pasta que a publicação automática não toca e o
- * festival-backup já copia — com nome fixo por evento. Por isso não precisa
- * de coluna no banco: o arquivo existir é a configuração.
+ * Uma de cada por evento, em public/uploads/votacao/ — pasta que a publicação
+ * automática não toca e o festival-backup já copia — com nome fixo por
+ * evento. Por isso não precisa de coluna no banco: o arquivo existir é a
+ * configuração.
  * ======================================================================== */
 
-const VP_CAPA_DIR = __DIR__ . '/../public/uploads/votacao';
-const VP_CAPA_LARGURA_MAX = 1800;
-const VP_CAPA_TIPOS = [IMAGETYPE_JPEG => 'jpg', IMAGETYPE_PNG => 'png', IMAGETYPE_WEBP => 'webp'];
+const VP_IMG_DIR = __DIR__ . '/../public/uploads/votacao';
+const VP_IMG_TIPOS = [IMAGETYPE_JPEG => 'jpg', IMAGETYPE_PNG => 'png', IMAGETYPE_WEBP => 'webp'];
 
-/** Caminho relativo da capa do evento (com ?v= para trocar sem cache), ou null. */
-function vp_capa_url(int $eventId): ?string
+/** capa = arte no topo da página; fundo = imagem atrás de tudo. */
+const VP_IMG_USOS = [
+    'capa'  => ['prefixo' => 'capa-evento-',  'largura' => 1800],
+    'fundo' => ['prefixo' => 'fundo-evento-', 'largura' => 1600],
+];
+
+/** Caminho relativo da imagem (com ?v= para trocar sem cache), ou null. */
+function vp_imagem_url(int $eventId, string $uso): ?string
 {
-    foreach (VP_CAPA_TIPOS as $ext) {
-        $arquivo = VP_CAPA_DIR . '/capa-evento-' . $eventId . '.' . $ext;
+    $prefixo = VP_IMG_USOS[$uso]['prefixo'] ?? null;
+    if ($prefixo === null) {
+        return null;
+    }
+
+    foreach (VP_IMG_TIPOS as $ext) {
+        $arquivo = VP_IMG_DIR . '/' . $prefixo . $eventId . '.' . $ext;
         if (is_file($arquivo)) {
-            return 'public/uploads/votacao/capa-evento-' . $eventId . '.' . $ext . '?v=' . filemtime($arquivo);
+            return 'public/uploads/votacao/' . $prefixo . $eventId . '.' . $ext . '?v=' . filemtime($arquivo);
         }
     }
 
@@ -924,17 +762,22 @@ function vp_capa_url(int $eventId): ?string
 }
 
 /**
- * Grava a capa enviada no campo $campo.
+ * Grava a imagem enviada no campo $campo.
  *
  * O tipo vem do cabeçalho binário (getimagesize), nunca do nome do arquivo.
  * A imagem é sempre regravada pelo GD: isso tira metadados (EXIF com GPS do
- * celular de quem fotografou) e reduz imagens grandes para no máximo
- * 1800 px de largura — quem abre o link está no 4G da plateia.
+ * celular de quem fotografou) e reduz imagens grandes — quem abre o link
+ * está no 4G da plateia.
  *
  * @return string|null mensagem de erro, ou null se gravou
  */
-function vp_capa_salvar(int $eventId, string $campo = 'capa'): ?string
+function vp_imagem_salvar(int $eventId, string $uso, string $campo = 'imagem'): ?string
 {
+    $config = VP_IMG_USOS[$uso] ?? null;
+    if ($config === null) {
+        return 'Tipo de imagem desconhecido.';
+    }
+
     $f = $_FILES[$campo] ?? null;
 
     if (!$f || ($f['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
@@ -948,7 +791,7 @@ function vp_capa_salvar(int $eventId, string $campo = 'capa'): ?string
     }
 
     $info = @getimagesize($f['tmp_name']);
-    if ($info === false || !isset(VP_CAPA_TIPOS[$info[2]])) {
+    if ($info === false || !isset(VP_IMG_TIPOS[$info[2]])) {
         return 'Envie uma imagem JPG, PNG ou WEBP.';
     }
 
@@ -962,44 +805,122 @@ function vp_capa_salvar(int $eventId, string $campo = 'capa'): ?string
         return 'Não foi possível ler a imagem. Tente salvar como JPG e envie de novo.';
     }
 
+    $max = (int)$config['largura'];
     [$largura, $altura] = [imagesx($origem), imagesy($origem)];
-    if ($largura > VP_CAPA_LARGURA_MAX) {
-        $novaAltura = (int)round($altura * VP_CAPA_LARGURA_MAX / $largura);
-        $reduzida = imagecreatetruecolor(VP_CAPA_LARGURA_MAX, $novaAltura);
+    if ($largura > $max) {
+        $novaAltura = (int)round($altura * $max / $largura);
+        $reduzida = imagecreatetruecolor($max, $novaAltura);
         imagealphablending($reduzida, false);
         imagesavealpha($reduzida, true);
-        imagecopyresampled($reduzida, $origem, 0, 0, 0, 0, VP_CAPA_LARGURA_MAX, $novaAltura, $largura, $altura);
+        imagecopyresampled($reduzida, $origem, 0, 0, 0, 0, $max, $novaAltura, $largura, $altura);
         imagedestroy($origem);
         $origem = $reduzida;
     }
 
-    if (!is_dir(VP_CAPA_DIR)) {
-        mkdir(VP_CAPA_DIR, 0775, true);
+    if (!is_dir(VP_IMG_DIR)) {
+        mkdir(VP_IMG_DIR, 0775, true);
     }
 
     // PNG continua PNG (pode ter transparência); o resto vira JPG.
     $ext = $info[2] === IMAGETYPE_PNG ? 'png' : 'jpg';
-    $destino = VP_CAPA_DIR . '/capa-evento-' . $eventId . '.' . $ext;
-    $ok = $ext === 'png' ? imagepng($origem, $destino, 7) : imagejpeg($origem, $destino, 84);
+    $base = VP_IMG_DIR . '/' . $config['prefixo'] . $eventId;
+    $ok = $ext === 'png' ? imagepng($origem, $base . '.png', 7) : imagejpeg($origem, $base . '.jpg', 84);
     imagedestroy($origem);
 
     if (!$ok) {
         return 'Não foi possível gravar a imagem no servidor.';
     }
-    @chmod($destino, 0644);
+    @chmod($base . '.' . $ext, 0644);
 
-    foreach (VP_CAPA_TIPOS as $outra) {
+    foreach (VP_IMG_TIPOS as $outra) {
         if ($outra !== $ext) {
-            @unlink(VP_CAPA_DIR . '/capa-evento-' . $eventId . '.' . $outra);
+            @unlink($base . '.' . $outra);
         }
     }
 
     return null;
 }
 
-function vp_capa_remover(int $eventId): void
+function vp_imagem_remover(int $eventId, string $uso): void
 {
-    foreach (VP_CAPA_TIPOS as $ext) {
-        @unlink(VP_CAPA_DIR . '/capa-evento-' . $eventId . '.' . $ext);
+    $prefixo = VP_IMG_USOS[$uso]['prefixo'] ?? null;
+    if ($prefixo === null) {
+        return;
     }
+
+    foreach (VP_IMG_TIPOS as $ext) {
+        @unlink(VP_IMG_DIR . '/' . $prefixo . $eventId . '.' . $ext);
+    }
+}
+
+/* ===========================================================================
+ * CORES DA PÁGINA
+ * ======================================================================== */
+
+/**
+ * Caminho absoluto (a partir da raiz do site) para usar dentro de url() no
+ * CSS. Um caminho relativo numa variável CSS é resolvido a partir da pasta
+ * da folha de estilo (public/assets/css/), não da página — a imagem não
+ * apareceria.
+ */
+function vp_url_absoluta(string $relativo): string
+{
+    $base = rtrim(str_replace('\\', '/', dirname((string)($_SERVER['SCRIPT_NAME'] ?? '/index.php'))), '/');
+
+    return $base . '/' . ltrim($relativo, '/');
+}
+
+/** Luminância relativa (WCAG) de uma cor #rrggbb, de 0 (preto) a 1 (branco). */
+function vp_luminancia(string $hex): float
+{
+    $canal = static function (int $v): float {
+        $c = $v / 255;
+        return $c <= 0.03928 ? $c / 12.92 : (($c + 0.055) / 1.055) ** 2.4;
+    };
+
+    return 0.2126 * $canal((int)hexdec(substr($hex, 1, 2)))
+         + 0.7152 * $canal((int)hexdec(substr($hex, 3, 2)))
+         + 0.0722 * $canal((int)hexdec(substr($hex, 5, 2)));
+}
+
+/** "#001a52" → "0, 26, 82", para usar em rgba(). */
+function vp_rgb(string $hex): string
+{
+    return hexdec(substr($hex, 1, 2)) . ', ' . hexdec(substr($hex, 3, 2)) . ', ' . hexdec(substr($hex, 5, 2));
+}
+
+/**
+ * As variáveis CSS da página a partir das duas cores escolhidas.
+ *
+ * O texto e os cartões se ajustam sozinhos ao fundo: fundo escuro ganha
+ * texto claro e cartão translúcido; fundo claro, o contrário. O texto sobre
+ * a cor de destaque também é escolhido pelo contraste. Assim, qualquer cor
+ * que o administrador escolha continua legível.
+ */
+function vp_tema_css(array $aparencia): string
+{
+    $fundo = $aparencia['cor_fundo'];
+    $destaque = $aparencia['cor_destaque'];
+    $fundoClaro = vp_luminancia($fundo) > 0.4;
+
+    $vars = [
+        '--vp-noite'          => $fundo,
+        '--vp-noite-rgb'      => vp_rgb($fundo),
+        '--vp-foco'           => $destaque,
+        '--vp-foco-rgb'       => vp_rgb($destaque),
+        '--vp-sobre-foco'     => vp_luminancia($destaque) > 0.4 ? '#0b1736' : '#ffffff',
+        '--vp-texto'          => $fundoClaro ? '#0b1736' : '#f3f6ff',
+        '--vp-suave'          => $fundoClaro ? '#4b5876' : '#b5c2e3',
+        '--vp-cartao'         => $fundoClaro ? 'rgba(255, 255, 255, .82)' : 'rgba(255, 255, 255, .07)',
+        '--vp-cartao-forte'   => $fundoClaro ? 'rgba(255, 255, 255, .95)' : 'rgba(255, 255, 255, .12)',
+        '--vp-borda'          => $fundoClaro ? 'rgba(11, 23, 54, .14)' : 'rgba(255, 255, 255, .14)',
+        '--vp-sobreposicao'   => (string)($aparencia['sobreposicao'] / 100),
+    ];
+
+    $css = '';
+    foreach ($vars as $nome => $valor) {
+        $css .= $nome . ': ' . $valor . '; ';
+    }
+
+    return trim($css);
 }
