@@ -166,6 +166,10 @@ CREATE TABLE criteria (
     name          VARCHAR(120)  NOT NULL,
     description   VARCHAR(255)  NULL,
     weight        DECIMAL(8,2)  NOT NULL DEFAULT 1,
+    -- Faixa própria do critério (mysql_16). NULL = herda a regra do evento.
+    nota_minima   DECIMAL(6,2)  NULL,
+    nota_maxima   DECIMAL(6,2)  NULL,
+    passo         DECIMAL(6,2)  NULL,
     display_order INT           NOT NULL DEFAULT 0,
     created_at    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
@@ -185,7 +189,7 @@ CREATE TABLE votes (
     judge_id       INT UNSIGNED NOT NULL,
     participant_id INT UNSIGNED NOT NULL,
     criterion_id   INT UNSIGNED NOT NULL,
-    score          DECIMAL(4,1) NOT NULL,
+    score          DECIMAL(6,2) NOT NULL,
     created_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at     DATETIME     NULL ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
@@ -205,7 +209,8 @@ CREATE TABLE votes (
     CONSTRAINT fk_votes_judge       FOREIGN KEY (judge_id)       REFERENCES judges(id)       ON DELETE CASCADE,
     CONSTRAINT fk_votes_participant FOREIGN KEY (participant_id) REFERENCES participants(id) ON DELETE CASCADE,
     CONSTRAINT fk_votes_criterion   FOREIGN KEY (criterion_id)   REFERENCES criteria(id)     ON DELETE CASCADE,
-    CONSTRAINT chk_votes_score CHECK (score BETWEEN 0 AND 10)
+    -- O teto é de cada critério e é conferido ao gravar (lib/regras.php).
+    CONSTRAINT chk_votes_score_min CHECK (score >= 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------------------------------------------------------------------------

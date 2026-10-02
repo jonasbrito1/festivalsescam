@@ -566,22 +566,70 @@ function mysql_sync_participants(PDO $pdo, array $itens): void
     mysql_remover_ausentes($pdo, 'participants', $ids);
 }
 
+/**
+ * As colunas da faixa por critério (mysql_16) já existem neste banco?
+ *
+ * O código precisa funcionar antes e depois da migração: sem as colunas, o
+ * INSERT abaixo falharia e derrubaria a gravação de TODOS os cadastros.
+ */
+function mysql_criterios_tem_faixa(?PDO $pdo = null): bool
+{
+    static $tem = null;
+
+    if ($tem !== null) {
+        return $tem;
+    }
+
+    $pdo ??= mysql_conexao();
+    if (!$pdo) {
+        return false;
+    }
+
+    try {
+        $sql = $pdo->query(
+            "SELECT COUNT(*) FROM information_schema.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'criteria'
+                AND COLUMN_NAME IN ('nota_minima', 'nota_maxima', 'passo')"
+        );
+        $tem = (int) $sql->fetchColumn() === 3;
+    } catch (Throwable $e) {
+        error_log('mysql_criterios_tem_faixa: ' . $e->getMessage());
+        $tem = false;
+    }
+
+    return $tem;
+}
+
+/** Faixa vazia no JSON vira NULL no banco: NULL = herda a regra do evento. */
+function mysql_decimal_ou_nulo($valor): ?float
+{
+    return $valor === null || $valor === '' ? null : (float) $valor;
+}
+
 function mysql_sync_criteria(PDO $pdo, array $itens): void
 {
     $ids = [];
-    $sql = $pdo->prepare(
-        'INSERT INTO criteria (id, event_id, name, description, weight, display_order, created_at)
-         VALUES (:id, :evento, :nome, :desc, :peso, :ordem, :criado)
-         ON DUPLICATE KEY UPDATE event_id = VALUES(event_id), name = VALUES(name),
-             description = VALUES(description), weight = VALUES(weight),
-             display_order = VALUES(display_order)'
+    $comFaixa = mysql_criterios_tem_faixa($pdo);
+
+    $sql = $pdo->prepare($comFaixa
+        ? 'INSERT INTO criteria (id, event_id, name, description, weight, nota_minima, nota_maxima, passo, display_order, created_at)
+           VALUES (:id, :evento, :nome, :desc, :peso, :nmin, :nmax, :passo, :ordem, :criado)
+           ON DUPLICATE KEY UPDATE event_id = VALUES(event_id), name = VALUES(name),
+               description = VALUES(description), weight = VALUES(weight),
+               nota_minima = VALUES(nota_minima), nota_maxima = VALUES(nota_maxima),
+               passo = VALUES(passo), display_order = VALUES(display_order)'
+        : 'INSERT INTO criteria (id, event_id, name, description, weight, display_order, created_at)
+           VALUES (:id, :evento, :nome, :desc, :peso, :ordem, :criado)
+           ON DUPLICATE KEY UPDATE event_id = VALUES(event_id), name = VALUES(name),
+               description = VALUES(description), weight = VALUES(weight),
+               display_order = VALUES(display_order)'
     );
 
     foreach ($itens as $c) {
         $ids[] = (int) $c['id'];
         $peso = (float) ($c['weight'] ?? 1);
 
-        $sql->execute([
+        $params = [
             ':id'     => (int) $c['id'],
             ':evento' => (int) $c['event_id'],
             ':nome'   => (string) $c['name'],
@@ -590,7 +638,15 @@ function mysql_sync_criteria(PDO $pdo, array $itens): void
             ':peso'   => $peso > 0 ? $peso : 1,
             ':ordem'  => (int) ($c['display_order'] ?? 0),
             ':criado' => mysql_data($c['created_at'] ?? null) ?? date('Y-m-d H:i:s'),
-        ]);
+        ];
+
+        if ($comFaixa) {
+            $params[':nmin']  = mysql_decimal_ou_nulo($c['nota_minima'] ?? null);
+            $params[':nmax']  = mysql_decimal_ou_nulo($c['nota_maxima'] ?? null);
+            $params[':passo'] = mysql_decimal_ou_nulo($c['passo'] ?? null);
+        }
+
+        $sql->execute($params);
     }
 
     mysql_remover_ausentes($pdo, 'criteria', $ids);
@@ -757,6 +813,10 @@ function mysql_ler_banco(): ?array
                 'description'   => (string) ($r['description'] ?? ''),
                 // DECIMAL volta como string do driver; a aplicacao espera numero.
                 'weight'        => (float) $r['weight'],
+                // Faixa própria (mysql_16). Ausente ou NULL = regra do evento.
+                'nota_minima'   => mysql_decimal_ou_nulo($r['nota_minima'] ?? null),
+                'nota_maxima'   => mysql_decimal_ou_nulo($r['nota_maxima'] ?? null),
+                'passo'         => mysql_decimal_ou_nulo($r['passo'] ?? null),
                 'display_order' => (int) $r['display_order'],
                 'created_at'    => mysql_iso($r['created_at']),
             ];

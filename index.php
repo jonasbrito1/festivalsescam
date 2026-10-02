@@ -32,6 +32,10 @@ require_once __DIR__ . '/lib/planilha.php';
  * sempre — ver lib/regras.php. */
 require_once __DIR__ . '/lib/regras.php';
 
+/* Como a nota final é calculada em cada evento (soma ou média) e a votação
+ * do público, que soma aos pontos dos jurados — ver lib/voto_publico.php. */
+require_once __DIR__ . '/lib/voto_publico.php';
+
 /* Resultado final por WhatsApp quando o ultimo jurado finaliza — ver
  * lib/resultado.php. */
 require_once __DIR__ . '/lib/resultado.php';
@@ -1852,6 +1856,74 @@ function ordenar_criterios(array $criterios): array
     return $criterios;
 }
 
+/**
+ * Lê a escala da nota enviada pela tela de Critérios.
+ *
+ * "Padrão do evento" grava as três colunas vazias — o critério segue a regra
+ * do evento (0 a 10, ou a do regulamento). "Personalizada" grava a faixa do
+ * próprio critério, que vai junto para a ficha do jurado, para a conferência
+ * no servidor e para o "Finalizar Avaliações".
+ *
+ * @return array{nota_minima:?float, nota_maxima:?float, passo:?float}|string
+ *         a faixa a gravar, ou a mensagem de erro
+ */
+function criterio_faixa_do_post()
+{
+    $vazia = ['nota_minima' => null, 'nota_maxima' => null, 'passo' => null];
+
+    if (($_POST['escala_modo'] ?? 'evento') !== 'propria') {
+        return $vazia;
+    }
+
+    $ler = static function (string $campo): ?float {
+        $bruto = trim(str_replace(',', '.', (string)($_POST[$campo] ?? '')));
+
+        return $bruto === '' || !is_numeric($bruto) ? null : (float)$bruto;
+    };
+
+    $min = $ler('nota_minima') ?? 0.0;
+    $max = $ler('nota_maxima');
+
+    if ($max === null) {
+        return 'Informe a nota máxima da escala personalizada (por exemplo, 100).';
+    }
+
+    $passo = $ler('passo') ?? criterio_passo_padrao($min, $max);
+    $erro = criterio_faixa_erro($min, $max, $passo);
+
+    if ($erro !== null) {
+        return $erro;
+    }
+
+    /* Sem as colunas no banco, a faixa seria gravada só no arquivo local e
+       sumiria na próxima leitura do MySQL. Melhor recusar com o motivo. */
+    if (mysql_ativo() && !mysql_criterios_tem_faixa()) {
+        return 'O banco de dados ainda não aceita escala por critério. '
+            . 'Aplique sql/mysql_16_faixa_nota_criterio.sql e tente de novo.';
+    }
+
+    return ['nota_minima' => $min, 'nota_maxima' => $max, 'passo' => $passo];
+}
+
+/**
+ * Quantas notas já lançadas ficariam fora da faixa nova do critério.
+ * Não muda nota nenhuma — só avisa quem está editando.
+ */
+function criterio_notas_fora_da_faixa(array $db, array $criterio): int
+{
+    $regras = regras_do_criterio($criterio);
+    $fora = 0;
+
+    foreach ($db['votes'] ?? [] as $voto) {
+        if ((int)$voto['criterion_id'] === (int)$criterio['id']
+            && !nota_valida((float)$voto['score'], $regras)) {
+            $fora++;
+        }
+    }
+
+    return $fora;
+}
+
 function ranking_for_event(array $db, int $eventId): array
 {
     $participants = items_for_event($db['participants'] ?? [], $eventId);
@@ -1861,6 +1933,12 @@ function ranking_for_event(array $db, int $eventId): array
     foreach ($criteria as $criterion) {
         $criteriaById[(int)$criterion['id']] = max((float)$criterion['weight'], 0.1);
     }
+
+    /* Como este evento calcula a nota final — soma ou média — e se o público
+       vota. Configurado em Configurações do evento > Cálculo da nota. */
+    $apuracao = vp_config($eventId);
+    $modo = $apuracao['modo_calculo'];
+    $publico = $apuracao['publico_ativo'] ? vp_resultado($eventId) : [];
 
     /* Uma consulta só para todo o evento; dentro do laço seriam N idas ao
        banco numa tela que recarrega a cada 20 segundos. */
@@ -1907,19 +1985,36 @@ function ranking_for_event(array $db, int $eventId): array
             }
         }
 
-        // Média ponderada por jurado, promediada entre os jurados.
-        $media = $judgeCount > 0 ? $total / $judgeCount : 0;
+        /* A parte dos jurados, conforme o modo do evento:
+         *   soma        todos os pontos (nota × peso) de todos os jurados
+         *   soma_media  total de cada jurado, na média entre os jurados
+         *   media       média ponderada por jurado, promediada entre eles */
+        $pontosJurados = match ($modo) {
+            'soma'       => $pontosTotais,
+            'soma_media' => $judgeCount > 0 ? $pontosTotais / $judgeCount : 0.0,
+            default      => $judgeCount > 0 ? $total / $judgeCount : 0.0,
+        };
+
+        /* O público SOMA aos jurados os pontos da colocação que ele teve no
+           voto do público (1º = 30, 2º = 20...) — ver vp_resultado(). */
+        $doPublico = $publico[(int)$participant['id']] ?? null;
+        $pontosPublico = $doPublico ? (float)$doPublico['pontos'] : 0.0;
+        $bruta = $pontosJurados + $pontosPublico;
 
         /* Penalidades do regulamento — 0,5 por conduta, 1,0 por figurino etc.
-         * Descontam da NOTA GERAL, que é a média: é o número na escala do
-         * concurso. Descontar da soma bruta faria 0,5 valer um vigésimo do que
+         * Descontam da NOTA GERAL, que é o número na escala do concurso.
+         * Descontar da soma bruta faria 0,5 valer um vigésimo do que
          * deveria num evento com quatro jurados e cinco critérios. */
         $desconto = (float)($penalidades[(int)$participant['id']]['total'] ?? 0);
 
         $ranking[] = [
             'participant' => $participant,
-            'score' => max(0, $media - $desconto),
-            'score_bruto' => $media,
+            'score' => max(0, $bruta - $desconto),
+            'score_bruto' => $bruta,
+            'pontos_jurados' => $pontosJurados,
+            'pontos_publico' => $pontosPublico,
+            'votos_publico' => $doPublico ? (int)$doPublico['votos'] : 0,
+            'posicao_publico' => $doPublico ? (int)$doPublico['posicao'] : 0,
             'penalidade' => $desconto,
             'total_points' => $pontosTotais,
             'judge_count' => $judgeCount,
@@ -2563,6 +2658,130 @@ function handle_post(): void
     $db = db_read();
     $action = $_POST['action'] ?? '';
 
+    /* ===================================================================
+     * Votação do público — rota aberta, sem login. Quem chega aqui provou
+     * só ter o link (o token). O resto é conferido em vp_votar().
+     * =================================================================== */
+    if ($action === 'voto_publico') {
+        $token = (string)($_POST['t'] ?? '');
+        $eventId = vp_evento_do_token($token);
+        $voltar = '?page=votar&t=' . rawurlencode($token);
+
+        if ($eventId === null) {
+            flash('Este link de votação não é mais válido.', 'error');
+            redirect_query('?page=votar');
+        }
+
+        $participantId = (int)($_POST['participant_id'] ?? 0);
+        $participante = find_by_id(items_for_event($db['participants'] ?? [], $eventId), $participantId);
+
+        if (!$participante || ($participante['status'] ?? 'ativo') === 'inativo') {
+            flash('Participante não encontrado nesta votação.', 'error');
+            redirect_query($voltar);
+        }
+
+        $notas = $_POST['notas'] ?? [];
+        $r = vp_votar(
+            $eventId,
+            $participantId,
+            is_array($notas) ? $notas : [],
+            vp_dispositivo(),
+            vp_hash_ip($eventId, ip_visitante())
+        );
+
+        flash($r['mensagem'], $r['ok'] ? 'success' : 'error');
+        redirect_query($voltar . '#participante-' . $participantId);
+    }
+
+    /* Configuração da votação do público, no painel do administrador. */
+    if (in_array($action, ['vp_config', 'vp_novo_link', 'vp_criterio_salvar', 'vp_criterio_excluir', 'vp_zerar'], true)) {
+        require_admin();
+        $eventId = (int)($_POST['event_id'] ?? 0);
+        $voltar = ['event_id' => $eventId, 'section' => 'voto-publico'];
+
+        if (!find_by_id($db['events'] ?? [], $eventId)) {
+            flash('Evento não encontrado.', 'error');
+            redirect_to('dashboard', ['section' => 'voto-publico']);
+        }
+
+        if (!vp_tabelas_ok()) {
+            flash('O banco ainda não tem as tabelas da votação do público. Aplique sql/mysql_17_voto_publico.sql.', 'error');
+            redirect_to('dashboard', $voltar);
+        }
+
+        if ($action === 'vp_config') {
+            /* Pontos por colocação: um campo por posição (1º, 2º, ...). Em
+               branco vale 0; zeros no fim da lista são descartados. */
+            $pontosPosicao = [];
+            foreach ((array)($_POST['pontos_posicao'] ?? []) as $valor) {
+                $bruto = trim(str_replace(',', '.', (string)$valor));
+                $pontosPosicao[] = $bruto === '' || !is_numeric($bruto) ? 0.0 : max(0.0, (float)$bruto);
+            }
+
+            $mudancas = [
+                'publico_ativo'         => isset($_POST['publico_ativo']),
+                'publico_aberto'        => isset($_POST['publico_ativo']) && isset($_POST['publico_aberto']),
+                'publico_restringir_ip' => isset($_POST['publico_restringir_ip']),
+                'publico_pontos'        => $pontosPosicao,
+                'publico_classificar'   => (string)($_POST['publico_classificar'] ?? 'soma'),
+            ];
+            $ok = vp_salvar_config($eventId, $mudancas);
+
+            // O link nasce na primeira vez em que a votação é ligada.
+            if ($ok && $mudancas['publico_ativo'] && vp_config($eventId)['publico_token'] === null) {
+                $ok = vp_novo_token($eventId);
+            }
+
+            flash($ok ? 'Votação do público atualizada.' : 'Falha ao salvar a configuração.', $ok ? 'success' : 'error');
+        }
+
+        if ($action === 'vp_novo_link') {
+            $ok = vp_novo_token($eventId);
+            flash($ok ? 'Link novo gerado. O link anterior parou de funcionar.' : 'Falha ao gerar o link.', $ok ? 'success' : 'error');
+        }
+
+        if ($action === 'vp_criterio_salvar') {
+            $ler = static function (string $campo, float $padrao): float {
+                $bruto = trim(str_replace(',', '.', (string)($_POST[$campo] ?? '')));
+
+                return $bruto === '' || !is_numeric($bruto) ? $padrao : (float)$bruto;
+            };
+            $min = $ler('nota_minima', 0.0);
+            $max = $ler('nota_maxima', 10.0);
+            $idCriterio = (int)($_POST['criterio_id'] ?? 0);
+
+            $erro = vp_criterio_gravar($eventId, $idCriterio > 0 ? $idCriterio : null, [
+                'nome'        => clean((string)($_POST['nome'] ?? '')),
+                'descricao'   => clean((string)($_POST['descricao'] ?? '')),
+                'nota_minima' => $min,
+                'nota_maxima' => $max,
+                // Público vota em números inteiros, salvo se pedirem outra coisa.
+                'passo'       => $ler('passo', 1.0),
+                'ordem'       => (int)($_POST['ordem'] ?? 0),
+            ]);
+
+            if ($erro !== null) {
+                flash($erro, 'error');
+                redirect_query('?page=dashboard&section=voto-publico&event_id=' . $eventId
+                    . ($idCriterio > 0 ? '&vp_editar=' . $idCriterio : '') . '#vp-criterio');
+            }
+
+            flash($idCriterio > 0 ? 'Critério do público atualizado.' : 'Critério do público adicionado.');
+        }
+
+        if ($action === 'vp_criterio_excluir') {
+            $ok = vp_criterio_excluir($eventId, (int)($_POST['criterio_id'] ?? 0));
+            flash($ok ? 'Critério do público excluído, com as notas dadas nele.' : 'Falha ao excluir.', $ok ? 'success' : 'error');
+        }
+
+        if ($action === 'vp_zerar') {
+            $ok = vp_zerar_votos($eventId);
+            flash($ok ? 'Votos do público apagados.' : 'Falha ao apagar os votos.', $ok ? 'success' : 'error');
+        }
+
+        redirect_to('dashboard', $voltar);
+    }
+
     if ($action === 'admin_login') {
         $email = strtolower(clean($_POST['email'] ?? ''));
         $password = (string)($_POST['password'] ?? '');
@@ -2736,6 +2955,11 @@ function handle_post(): void
         }
 
         db_write($db);
+
+        /* Evento novo nasce somando os pontos. Os antigos, sem configuração,
+           seguem na média — nenhum resultado já apurado muda sozinho. */
+        vp_salvar_config($eventId, ['modo_calculo' => 'soma']);
+
         flash('Evento criado com critérios padrão.');
         redirect_to('dashboard', ['event_id' => $eventId, 'section' => 'jurados']);
     }
@@ -2881,6 +3105,13 @@ function handle_post(): void
     if ($action === 'create_criterion') {
         require_admin();
         $eventId = (int)$_POST['event_id'];
+        $faixa = criterio_faixa_do_post();
+
+        if (is_string($faixa)) {
+            flash($faixa, 'error');
+            redirect_query('?page=dashboard&section=criterios&event_id=' . $eventId . '#novo-criterio');
+        }
+
         $db['criteria'][] = [
             'id' => next_id($db, 'criteria'),
             'event_id' => $eventId,
@@ -2889,7 +3120,7 @@ function handle_post(): void
             // não havia campo para preenchê-la.
             'description' => mb_substr(clean($_POST['description'] ?? ''), 0, 255),
             'weight' => max((float)($_POST['weight'] ?? 1), 0.1),
-        ];
+        ] + $faixa;
         db_write($db);
         flash('Critério adicionado.');
         redirect_to('dashboard', ['event_id' => $eventId, 'section' => 'criterios']);
@@ -2900,6 +3131,15 @@ function handle_post(): void
         $eventId = (int)$_POST['event_id'];
         $criterionId = (int)$_POST['criterion_id'];
         $updated = false;
+        $faixa = criterio_faixa_do_post();
+
+        if (is_string($faixa)) {
+            flash($faixa, 'error');
+            redirect_query('?page=dashboard&section=criterios&event_id=' . $eventId
+                . '&criterion_edit=' . $criterionId . '#novo-criterio');
+        }
+
+        $foraDaFaixa = 0;
 
         foreach (($db['criteria'] ?? []) as $index => $criterion) {
             if ((int)$criterion['id'] !== $criterionId) {
@@ -2910,6 +3150,8 @@ function handle_post(): void
             $db['criteria'][$index]['name'] = clean($_POST['name'] ?? '');
             $db['criteria'][$index]['description'] = mb_substr(clean($_POST['description'] ?? ''), 0, 255);
             $db['criteria'][$index]['weight'] = max((float)($_POST['weight'] ?? 1), 0.1);
+            $db['criteria'][$index] = $faixa + $db['criteria'][$index];
+            $foraDaFaixa = criterio_notas_fora_da_faixa($db, $db['criteria'][$index]);
             $updated = true;
             break;
         }
@@ -2920,6 +3162,16 @@ function handle_post(): void
         }
 
         db_write($db);
+
+        /* A nota já lançada não é mexida: aparar 85 para 10 seria inventar
+           uma nota que o jurado não deu. Quem edita fica sabendo, e o jurado
+           corrige na própria ficha (o servidor recusa salvar fora da faixa). */
+        if ($foraDaFaixa > 0) {
+            flash('Critério atualizado. Atenção: ' . $foraDaFaixa . ' nota(s) já lançada(s) neste critério '
+                . 'ficaram fora da nova escala — os jurados precisam corrigi-las na ficha.', 'error');
+            redirect_to('dashboard', ['event_id' => $eventId, 'section' => 'criterios']);
+        }
+
         flash('Critério atualizado.');
         redirect_to('dashboard', ['event_id' => $eventId, 'section' => 'criterios']);
     }
@@ -3557,6 +3809,18 @@ function handle_post(): void
         require_admin();
         $eventId = (int)$_POST['event_id'];
         $configTab = clean($_POST['config_tab'] ?? 'gerais');
+
+        /* O cálculo da nota fica em lib/voto_publico.php, não no cadastro do
+           evento: não passa pelo db_write() de todos os cadastros. */
+        if ($configTab === 'calculo') {
+            $modo = (string)($_POST['modo_calculo'] ?? '');
+            $ok = isset(VP_MODOS_CALCULO[$modo]) && vp_salvar_config($eventId, ['modo_calculo' => $modo]);
+            flash($ok ? 'Cálculo da nota atualizado.' : (vp_tabelas_ok()
+                ? 'Falha ao salvar o cálculo da nota.'
+                : 'O banco ainda não tem as tabelas da apuração. Aplique sql/mysql_17_voto_publico.sql.'), $ok ? 'success' : 'error');
+            redirect_to('dashboard', ['event_id' => $eventId, 'section' => 'configuracoes', 'config_tab' => 'calculo']);
+        }
+
         $db['events'] = $db['events'] ?? [];
         foreach ($db['events'] as &$event) {
             if ((int)$event['id'] === $eventId) {
@@ -3893,7 +4157,14 @@ function handle_post(): void
         /* Regras deste evento: faixa da nota e quando a justificativa é
            obrigatória. Evento sem regra própria segue 0 a 10, sem exigência —
            ver lib/regras.php. */
-        $regras = regras_do_evento($eventId);
+        $regrasEvento = regras_do_evento($eventId);
+        /* Cada critério pode ter a sua própria escala (0 a 100, 0 a 50...).
+           A conferência é critério a critério, com a faixa DELE. */
+        $regrasPorCriterio = [];
+        foreach ($criteria as $criterion) {
+            $regrasPorCriterio[(int)$criterion['id']] = regras_do_criterio($criterion, $regrasEvento);
+        }
+        $nomesCriterios = array_column($criteria, 'name', 'id');
         $justificativas = $_POST['justificativas'] ?? [];
         $foraDaFaixa = [];
         $semJustificativa = [];
@@ -3910,6 +4181,7 @@ function handle_post(): void
             }
 
             $nota = (float)str_replace(',', '.', $normalizedScore);
+            $regras = $regrasPorCriterio[$criterionId];
 
             /* Recusa em vez de aparar. Cortar 8,5 para 9,0 num concurso cuja
                nota mínima é 9,0 seria inventar uma nota que o jurado não deu. */
@@ -3930,10 +4202,15 @@ function handle_post(): void
         }
 
         if ($foraDaFaixa || $semJustificativa) {
+            /* A mensagem diz QUAL critério e QUAL faixa: com escalas
+               diferentes na mesma ficha, "entre 0 e 10" não basta. */
+            $alvoErro = $foraDaFaixa ? $foraDaFaixa[0] : $semJustificativa[0];
+            $regrasErro = $regrasPorCriterio[$alvoErro];
+            $nomeErro = (string)($nomesCriterios[$alvoErro] ?? 'critério');
             $message = $foraDaFaixa
-                ? 'A nota precisa estar entre ' . regras_texto_faixa($regras) . '.'
-                : 'Justifique as notas abaixo de ' . numero_pt((float)$regras['justificativa_abaixo_de'])
-                  . ' — o regulamento exige.';
+                ? 'A nota de "' . $nomeErro . '" precisa estar ' . regras_texto_faixa($regrasErro) . '.'
+                : 'Justifique a nota de "' . $nomeErro . '" — abaixo de '
+                  . numero_pt((float)$regrasErro['justificativa_abaixo_de']) . ' o regulamento exige.';
 
             if (is_json_request()) {
                 json_response(['ok' => false, 'message' => $message], 422);
@@ -4175,9 +4452,15 @@ function handle_post(): void
         $completadas = 0;
 
         if ($regras['nota_ao_finalizar'] !== null) {
-            $nota = (float)$regras['nota_ao_finalizar'];
             $criterios = items_for_event($db['criteria'] ?? [], $eventId);
             $participantes = items_for_event($db['participants'] ?? [], $eventId);
+
+            /* "Nota esquecida vale a máxima" na escala de cada critério: num
+               critério de 0 a 100 a nota automática é 100, não 10. */
+            $notaAuto = [];
+            foreach ($criterios as $c) {
+                $notaAuto[(int)$c['id']] = (float)regras_do_criterio($c, $regras)['nota_ao_finalizar'];
+            }
 
             $lancadas = [];
             foreach ($db['votes'] ?? [] as $voto) {
@@ -4198,7 +4481,7 @@ function handle_post(): void
                         'judge_id' => $judgeId,
                         'participant_id' => (int)$p['id'],
                         'criterion_id' => (int)$c['id'],
-                        'score' => $nota,
+                        'score' => $notaAuto[(int)$c['id']],
                         'justificativa' => 'Nota atribuída automaticamente ao finalizar, '
                             . 'conforme o regulamento (item 6.6).',
                         'created_at' => date('c'),
@@ -4216,7 +4499,7 @@ function handle_post(): void
                         foreach ($criterios as $c) {
                             if (!isset($lancadas[(int)$p['id']][(int)$c['id']])) {
                                 $faltantes[(int)$c['id']] = [
-                                    'nota' => $nota,
+                                    'nota' => $notaAuto[(int)$c['id']],
                                     'justificativa' => 'Nota atribuída automaticamente ao finalizar, '
                                         . 'conforme o regulamento (item 6.6).',
                                 ];
@@ -6236,6 +6519,7 @@ function render_dashboard(): void
         ['participantes', 'participante', 'Participantes'],
         ['criterios',     'criterio',     'Critérios'],
         ['apuracao',      'apuracao',     'Apuração'],
+        ['voto-publico',  'votacao',      'Voto do público'],
         ['relatorios',    'relatorio',    'Relatórios'],
         ['placar',        'placar',       'Placar em tempo real'],
         ['criar-relatorio', 'relatorio',  'Criar relatório'],
@@ -6895,13 +7179,35 @@ function render_dashboard(): void
             <div class="panel data-panel">
                 <div class="table-wrap">
                     <table class="admin-table responsive-cards">
-                        <thead><tr><th>Ordem</th><th>Critério</th><th>Peso (%)</th><th>Descrição</th><th>Ações</th></tr></thead>
+                        <?php
+                        /* Escala de cada critério: a própria, quando definida,
+                           ou a do evento. É a mesma conta que a ficha do jurado
+                           e o servidor fazem — ver regras_do_criterio(). */
+                        $regrasEventoCrit = regras_do_evento($eventId);
+                        $somaPesosCrit = 0.0;
+                        foreach ($criteria as $criterion) {
+                            $somaPesosCrit += (float)($criterion['weight'] ?? 1);
+                        }
+                        ?>
+                        <thead><tr><th>Ordem</th><th>Critério</th><th>Escala da nota</th><th>Peso (%)</th><th>Descrição</th><th>Ações</th></tr></thead>
                         <tbody>
                         <?php foreach ($criteria as $index => $criterion): ?>
+                            <?php $regrasCrit = regras_do_criterio($criterion, $regrasEventoCrit); ?>
                             <tr>
                                 <td data-label="Ordem"><?= $index + 1 ?></td>
                                 <td data-label="Critério"><?= h($criterion['name']) ?></td>
-                                <td data-label="Peso (%)"><?= number_format((float)$criterion['weight'] * 20, 0, ',', '.') ?>%</td>
+                                <td data-label="Escala da nota">
+                                    <strong><?= h(regras_faixa_curta($regrasCrit)) ?></strong>
+                                    <small class="escala-origem"><?= $regrasCrit['faixa_do_criterio']
+                                        ? 'personalizada · passo ' . h(numero_pt((float)$regrasCrit['passo']))
+                                        : 'padrão do evento' ?></small>
+                                </td>
+                                <?php /* Era `peso * 20`: dava 20% a qualquer critério de
+                                         peso 1, com qualquer número de critérios. Agora é a
+                                         fatia real de cada um, como na tela do jurado. */ ?>
+                                <td data-label="Peso (%)"><?= $somaPesosCrit > 0
+                                    ? number_format((float)($criterion['weight'] ?? 1) / $somaPesosCrit * 100, 0, ',', '.')
+                                    : '0' ?>%</td>
                                 <td data-label="Descrição"><?= h(($criterion['description'] ?? '') !== '' ? $criterion['description'] : 'Avaliação do participante neste critério.') ?></td>
                                 <td data-label="Ações">
                                     <div class="table-actions">
@@ -6916,12 +7222,12 @@ function render_dashboard(): void
                                 </td>
                             </tr>
                         <?php endforeach; ?>
-                        <tr class="total-row"><td data-label="Resumo" colspan="2">Total dos Pesos</td><td data-label="Peso Total"><?= count($criteria) ? '100%' : '0%' ?></td><td colspan="2"></td></tr>
+                        <tr class="total-row"><td data-label="Resumo" colspan="3">Total dos Pesos</td><td data-label="Peso Total"><?= count($criteria) ? '100%' : '0%' ?></td><td colspan="2"></td></tr>
                         </tbody>
                     </table>
                 </div>
             </div>
-            <div class="info-note">A soma dos pesos dos critérios deve ser igual a 100%.</div>
+            <div class="info-note">O peso de cada critério é a sua fatia na soma dos pesos. A escala da nota pode ser diferente em cada critério (por exemplo, 0 a 100 em um e 0 a 10 em outro) e vai automaticamente para a ficha dos jurados.</div>
             <form id="novo-criterio" class="panel form-stack compact-form" method="post">
                 <h2><?= $criterionToEdit ? 'Editar critério' : 'Novo critério' ?></h2>
                 <input type="hidden" name="action" value="<?= $criterionToEdit ? 'update_criterion' : 'create_criterion' ?>">
@@ -6936,6 +7242,37 @@ function render_dashboard(): void
                 </label>
                 <p class="dica">Aparece para o jurado durante a votação. Até 255 caracteres.</p>
                 <label>Peso <input required name="weight" type="number" min="0.1" step="0.1" value="<?= h(isset($criterionToEdit['weight']) ? (string)$criterionToEdit['weight'] : '1') ?>"></label>
+                <?php
+                $regrasEventoForm = regras_do_evento($eventId);
+                $escalaPropria = $criterionToEdit !== null && criterio_tem_faixa_propria($criterionToEdit);
+                $numeroCampo = static fn($v): string => $v === null || $v === '' ? '' : rtrim(rtrim(number_format((float)$v, 2, '.', ''), '0'), '.');
+                ?>
+                <fieldset class="escala-nota" data-escala-nota>
+                    <legend>Escala da nota</legend>
+                    <label class="escala-opcao">
+                        <input type="radio" name="escala_modo" value="evento" data-escala-modo <?= $escalaPropria ? '' : 'checked' ?>>
+                        <span>Padrão do evento <small>(<?= h(regras_faixa_curta($regrasEventoForm)) ?>)</small></span>
+                    </label>
+                    <label class="escala-opcao">
+                        <input type="radio" name="escala_modo" value="propria" data-escala-modo <?= $escalaPropria ? 'checked' : '' ?>>
+                        <span>Personalizada para este critério</span>
+                    </label>
+                    <div class="escala-campos" data-escala-campos <?= $escalaPropria ? '' : 'hidden' ?>>
+                        <label>Nota mínima
+                            <input name="nota_minima" type="number" min="0" max="<?= (int)CRITERIO_NOTA_TETO ?>" step="any" inputmode="decimal"
+                                   placeholder="0" value="<?= h($escalaPropria ? $numeroCampo($criterionToEdit['nota_minima'] ?? 0) : '') ?>">
+                        </label>
+                        <label>Nota máxima
+                            <input name="nota_maxima" type="number" min="1" max="<?= (int)CRITERIO_NOTA_TETO ?>" step="any" inputmode="decimal"
+                                   placeholder="100" value="<?= h($escalaPropria ? $numeroCampo($criterionToEdit['nota_maxima'] ?? '') : '') ?>">
+                        </label>
+                        <label>Intervalo entre notas
+                            <input name="passo" type="number" min="0.01" step="any" inputmode="decimal"
+                                   placeholder="automático" value="<?= h($escalaPropria ? $numeroCampo($criterionToEdit['passo'] ?? '') : '') ?>">
+                        </label>
+                        <p class="dica">Ex.: mínima 0, máxima 100 e intervalo 1 → o jurado lança notas inteiras de 0 a 100. Intervalo 0,5 aceita 85,5; 0,1 aceita 85,3. Em branco: 1 para escalas maiores que 20 pontos, 0,1 para as menores.</p>
+                    </div>
+                </fieldset>
                 <div class="form-actions">
                     <?php if ($criterionToEdit): ?>
                         <a class="button ghost" href="?page=dashboard&section=criterios&event_id=<?= $eventId ?>#novo-criterio">Cancelar edição</a>
@@ -6974,6 +7311,218 @@ function render_dashboard(): void
                      formulário nem pedia telefone nem oferecia a troca de senha
                      obrigatória — coisas que o formulário certo, em Usuários e
                      senhas, já faz. */ ?>
+        </section>
+    <?php endif; ?>
+
+    <?php if ($event && $section === 'voto-publico'): ?>
+        <?php
+        $vpCfg = vp_config($eventId);
+        $vpCriterios = vp_criterios($eventId);
+        $vpResultado = vp_resultado($eventId);
+        $vpEditarId = (int)($_GET['vp_editar'] ?? 0);
+        $vpEditar = null;
+        foreach ($vpCriterios as $c) {
+            if ($c['id'] === $vpEditarId) {
+                $vpEditar = $c;
+            }
+        }
+        $vpLink = $vpCfg['publico_token'] !== null ? link_votacao_publico($vpCfg['publico_token']) : null;
+        $vpTotalVotos = array_sum(array_column($vpResultado, 'votos'));
+        ?>
+        <section class="management-page voto-publico-page">
+            <div class="management-head">
+                <h2>Voto do público</h2>
+                <div class="management-actions">
+                    <form class="inline-form" method="get">
+                        <input type="hidden" name="page" value="dashboard">
+                        <input type="hidden" name="section" value="voto-publico">
+                        <select name="event_id" onchange="this.form.submit()">
+                            <?php foreach ($events as $item): ?>
+                                <option value="<?= (int)$item['id'] ?>" <?= $eventId === (int)$item['id'] ? 'selected' : '' ?>><?= h($item['name']) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </form>
+                </div>
+            </div>
+
+            <?php if (!vp_tabelas_ok()): ?>
+                <div class="flash error">O banco ainda não tem as tabelas da votação do público. Aplique <code>sql/mysql_17_voto_publico.sql</code> e recarregue esta página.</div>
+            <?php endif; ?>
+
+            <div class="info-note">
+                O público vota por um link aberto, sem login, nos critérios que você criar abaixo. Os votos formam a
+                <strong>classificação do público</strong>, e cada colocação ganha os pontos que você definir — ex.: 1º lugar 30,
+                2º lugar 20, 3º lugar 10. Esses pontos são <strong>somados</strong> à nota dos jurados
+                (cálculo atual deste evento: <a href="?page=dashboard&section=configuracoes&config_tab=calculo&event_id=<?= $eventId ?>"><?= h(VP_MODOS_CALCULO[$vpCfg['modo_calculo']]) ?></a>).
+            </div>
+
+            <section class="grid two vp-grade">
+                <form class="panel form-stack config-switches" method="post">
+                    <h2>Configuração</h2>
+                    <input type="hidden" name="action" value="vp_config">
+                    <input type="hidden" name="event_id" value="<?= $eventId ?>">
+                    <label><span><strong>Usar votação do público neste evento</strong><small>Os pontos do público entram na nota final.</small></span>
+                        <input type="checkbox" name="publico_ativo" <?= $vpCfg['publico_ativo'] ? 'checked' : '' ?>></label>
+                    <label><span><strong>Votação aberta</strong><small>O link aceita votos agora. Desligue para encerrar — os votos já dados continuam contando.</small></span>
+                        <input type="checkbox" name="publico_aberto" <?= $vpCfg['publico_aberto'] ? 'checked' : '' ?>></label>
+                    <label><span><strong>Um voto por conexão (restringir por IP)</strong><small>Sempre vale um voto por aparelho/navegador. Com esta opção, também um voto por IP — atenção: no Wi-Fi do teatro todos saem pelo mesmo IP e só a primeira pessoa conseguiria votar em cada participante.</small></span>
+                        <input type="checkbox" name="publico_restringir_ip" <?= $vpCfg['publico_restringir_ip'] ? 'checked' : '' ?>></label>
+
+                    <div class="vp-pontos">
+                        <strong>Pontos por colocação no voto do público</strong>
+                        <small>Somados à nota dos jurados. Em branco = 0. Quem fica abaixo da última colocação com pontos, ou não recebe voto, ganha 0 do público. Empate divide a colocação (dois em 1º levam os pontos do 1º).</small>
+                        <?php if ($vpCfg['publico_ativo'] && $vpCfg['publico_pontos'] === []): ?>
+                            <span class="erro-texto">Defina os pontos: sem eles o voto do público não muda a nota final.</span>
+                        <?php endif; ?>
+                        <div class="vp-pontos-grade">
+                            <?php for ($pos = 1; $pos <= 10; $pos++): ?>
+                                <?php $valorPos = $vpCfg['publico_pontos'][$pos - 1] ?? null; ?>
+                                <label><?= $pos ?>º lugar
+                                    <input type="number" name="pontos_posicao[]" min="0" step="any" inputmode="decimal"
+                                           value="<?= $valorPos !== null && $valorPos > 0 ? h(numero_campo($valorPos)) : '' ?>"
+                                           placeholder="<?= $pos <= 3 ? h((string)(40 - $pos * 10)) : '0' ?>">
+                                </label>
+                            <?php endfor; ?>
+                        </div>
+                        <label class="vp-classificar">Como o público classifica os participantes
+                            <select name="publico_classificar">
+                                <?php foreach (VP_CLASSIFICAR as $chave => $rotulo): ?>
+                                    <option value="<?= h($chave) ?>" <?= $vpCfg['publico_classificar'] === $chave ? 'selected' : '' ?>><?= h($rotulo) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </label>
+                    </div>
+                    <button class="button primary" type="submit">Salvar configuração</button>
+                </form>
+
+                <div class="panel vp-link-painel">
+                    <h2>Link para o público</h2>
+                    <?php if ($vpLink === null): ?>
+                        <p class="muted">O link é criado quando você liga a votação do público.</p>
+                    <?php else: ?>
+                        <div class="vp-link">
+                            <input type="text" readonly value="<?= h($vpLink) ?>" data-copiar-origem aria-label="Link da votação do público">
+                            <button class="button ghost small" type="button" data-copiar>Copiar</button>
+                            <a class="button ghost small" href="<?= h($vpLink) ?>" target="_blank" rel="noopener">Abrir</a>
+                        </div>
+                        <p class="vp-status">
+                            <?php if (!$vpCfg['publico_ativo']): ?>
+                                <span class="monitor-pill pending">Desligada</span> o link mostra "votação encerrada".
+                            <?php elseif (!$vpCfg['publico_aberto']): ?>
+                                <span class="monitor-pill partial">Fechada</span> o link mostra "votação encerrada"; os votos já dados contam.
+                            <?php else: ?>
+                                <span class="monitor-pill done">Aberta</span> recebendo votos.
+                            <?php endif; ?>
+                            <?= (int)$vpTotalVotos ?> voto(s) até agora.
+                        </p>
+                        <form method="post" onsubmit="return confirm('Gerar um link novo?\n\nO link atual para de funcionar — quem estiver com ele aberto não consegue mais votar.');">
+                            <input type="hidden" name="action" value="vp_novo_link">
+                            <input type="hidden" name="event_id" value="<?= $eventId ?>">
+                            <button class="button ghost small" type="submit">Gerar novo link</button>
+                        </form>
+                    <?php endif; ?>
+                </div>
+            </section>
+
+            <div class="panel data-panel">
+                <div class="table-wrap">
+                    <table class="admin-table responsive-cards">
+                        <thead><tr><th>Ordem</th><th>Critério do público</th><th>Escala</th><th>Descrição</th><th>Ações</th></tr></thead>
+                        <tbody>
+                        <?php if (!$vpCriterios): ?>
+                            <tr><td colspan="5">Nenhum critério ainda. Crie pelo menos um para o público poder votar.</td></tr>
+                        <?php endif; ?>
+                        <?php foreach ($vpCriterios as $i => $c): ?>
+                            <tr>
+                                <td data-label="Ordem"><?= $i + 1 ?></td>
+                                <td data-label="Critério"><strong><?= h($c['nome']) ?></strong></td>
+                                <td data-label="Escala"><?= h(numero_pt($c['nota_minima'])) ?> a <?= h(numero_pt($c['nota_maxima'])) ?><small class="escala-origem">passo <?= h(numero_pt($c['passo'])) ?></small></td>
+                                <td data-label="Descrição"><?= h($c['descricao'] !== '' ? $c['descricao'] : '—') ?></td>
+                                <td data-label="Ações">
+                                    <div class="table-actions">
+                                        <a class="icon-action" href="?page=dashboard&section=voto-publico&event_id=<?= $eventId ?>&vp_editar=<?= $c['id'] ?>#vp-criterio">Editar</a>
+                                        <form method="post" class="inline-delete-form" onsubmit="return confirm('Excluir este critério do público? As notas dadas nele também serão apagadas.');">
+                                            <input type="hidden" name="action" value="vp_criterio_excluir">
+                                            <input type="hidden" name="event_id" value="<?= $eventId ?>">
+                                            <input type="hidden" name="criterio_id" value="<?= $c['id'] ?>">
+                                            <button type="submit" class="icon-action danger">Excluir</button>
+                                        </form>
+                                    </div>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <form id="vp-criterio" class="panel form-stack compact-form" method="post">
+                <h2><?= $vpEditar ? 'Editar critério do público' : 'Novo critério do público' ?></h2>
+                <input type="hidden" name="action" value="vp_criterio_salvar">
+                <input type="hidden" name="event_id" value="<?= $eventId ?>">
+                <?php if ($vpEditar): ?><input type="hidden" name="criterio_id" value="<?= $vpEditar['id'] ?>"><?php endif; ?>
+                <label>Nome <input required name="nome" maxlength="120" placeholder="Ex.: Gostei da apresentação" value="<?= h($vpEditar['nome'] ?? '') ?>"></label>
+                <label>Ordem <input name="ordem" type="number" min="0" value="<?= h((string)($vpEditar['ordem'] ?? count($vpCriterios) + 1)) ?>"></label>
+                <label class="vp-col-inteira">Descrição (aparece para o público)
+                    <textarea name="descricao" rows="2" maxlength="255" placeholder="O que o público deve avaliar"><?= h($vpEditar['descricao'] ?? '') ?></textarea>
+                </label>
+                <div class="escala-campos vp-col-inteira">
+                    <label>Nota mínima <input name="nota_minima" type="number" min="0" step="any" value="<?= h(numero_campo($vpEditar['nota_minima'] ?? 0)) ?>"></label>
+                    <label>Nota máxima <input required name="nota_maxima" type="number" min="1" max="<?= (int)CRITERIO_NOTA_TETO ?>" step="any" value="<?= h(numero_campo($vpEditar['nota_maxima'] ?? 10)) ?>"></label>
+                    <label>Intervalo entre notas <input name="passo" type="number" min="0.01" step="any" value="<?= h(numero_campo($vpEditar['passo'] ?? 1)) ?>"></label>
+                    <p class="dica">Escalas de até 10 notas aparecem como botões para o público tocar (ex.: 0 a 10 de 1 em 1, ou 1 a 5 como estrelas). Escalas maiores viram um campo para digitar.</p>
+                </div>
+                <div class="form-actions">
+                    <?php if ($vpEditar): ?><a class="button ghost" href="?page=dashboard&section=voto-publico&event_id=<?= $eventId ?>#vp-criterio">Cancelar edição</a><?php endif; ?>
+                    <button class="button primary" type="submit"><?= $vpEditar ? 'Salvar alterações' : 'Adicionar critério' ?></button>
+                </div>
+            </form>
+
+            <div class="panel data-panel">
+                <h2 class="vp-titulo-tabela">Resultado do público</h2>
+                <div class="table-wrap">
+                    <table class="admin-table responsive-cards">
+                        <?php
+                        /* Na ordem da classificação do público; quem não recebeu
+                           voto vai para o fim. */
+                        $vpLinhas = $participants;
+                        usort($vpLinhas, static function ($a, $b) use ($vpResultado) {
+                            $pa = $vpResultado[(int)$a['id']]['posicao'] ?? PHP_INT_MAX;
+                            $pb = $vpResultado[(int)$b['id']]['posicao'] ?? PHP_INT_MAX;
+                            return $pa <=> $pb;
+                        });
+                        $rotuloMetrica = $vpCfg['publico_classificar'] === 'media' ? 'Média das notas' : 'Total recebido';
+                        ?>
+                        <thead><tr><th>Colocação</th><th>Participante</th><th>Votos</th>
+                            <?php foreach ($vpCriterios as $c): ?><th><?= h($c['nome']) ?> <small>(média)</small></th><?php endforeach; ?>
+                            <th><?= h($rotuloMetrica) ?> <small>(classifica)</small></th>
+                            <th>Pontos ganhos</th></tr></thead>
+                        <tbody>
+                        <?php foreach ($vpLinhas as $p): ?>
+                            <?php $vr = $vpResultado[(int)$p['id']] ?? null; ?>
+                            <tr>
+                                <td data-label="Colocação"><?= $vr ? (int)$vr['posicao'] . 'º' : '—' ?></td>
+                                <td data-label="Participante"><?= h($p['name']) ?></td>
+                                <td data-label="Votos"><?= (int)($vr['votos'] ?? 0) ?></td>
+                                <?php foreach ($vpCriterios as $c): ?>
+                                    <td data-label="<?= h($c['nome']) ?>"><?= isset($vr['medias'][$c['id']]) ? number_format((float)$vr['medias'][$c['id']], 2, ',', '.') : '-' ?></td>
+                                <?php endforeach; ?>
+                                <td data-label="<?= h($rotuloMetrica) ?>"><?= $vr ? number_format((float)$vr['metrica'], 2, ',', '.') : '-' ?></td>
+                                <td data-label="Pontos ganhos"><strong><?= number_format((float)($vr['pontos'] ?? 0), 2, ',', '.') ?></strong></td>
+                            </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <?php if ($vpTotalVotos > 0): ?>
+                <form method="post" class="vp-zerar" onsubmit="return confirm('Apagar TODOS os <?= (int)$vpTotalVotos ?> votos do público deste evento?\n\nUse só para limpar votos de teste. Não há como desfazer.');">
+                    <input type="hidden" name="action" value="vp_zerar">
+                    <input type="hidden" name="event_id" value="<?= $eventId ?>">
+                    <button class="button ghost danger small" type="submit">Apagar todos os votos do público</button>
+                </form>
+            <?php endif; ?>
         </section>
     <?php endif; ?>
 
@@ -7105,24 +7654,59 @@ function render_dashboard(): void
             <div class="scoreboard-list">
                 <?php /* As duas colunas de número estão em escalas diferentes, e
                          sem dizer qual é qual alguém acaba anotando a errada:
-                         a Média é por critério (0 a 10) e é o que ordena a
+                         a Média é por critério (na escala do critério) e é o que ordena a
                          lista; o Total soma tudo o que foi lançado, então passa
                          do máximo de um participante quando há mais de um
                          jurado. Os rótulos abaixo dizem isso. */ ?>
+                <?php
+                /* O que cada coluna mostra depende de como o evento calcula a
+                   nota (Configurações > Cálculo da nota) e de haver votação do
+                   público. A coluna em negrito é sempre a que ordena. */
+                $apuracaoPlacar = vp_config($eventId);
+                $modoPlacar = $apuracaoPlacar['modo_calculo'];
+                $publicoPlacar = $apuracaoPlacar['publico_ativo'];
+                $escalaPlacar = escala_comum_dos_criterios($criteria, regras_do_evento($eventId));
+                if ($modoPlacar === 'media') {
+                    $rotuloNota = 'Média';
+                    $subNota = $escalaPlacar !== null ? 'por critério, ' . regras_faixa_curta($escalaPlacar) : 'ponderada, nas escalas dos critérios';
+                } else {
+                    $rotuloNota = 'Pontos';
+                    $subNota = $modoPlacar === 'soma' ? 'soma de todos os jurados' : 'média dos totais dos jurados';
+                }
+                if ($publicoPlacar) {
+                    $subNota .= ' + público';
+                }
+                if ($publicoPlacar) {
+                    [$rotuloExtra, $subExtra] = ['Público', 'pontos (colocação)'];
+                } elseif ($modoPlacar === 'soma') {
+                    [$rotuloExtra, $subExtra] = ['Notas', 'lançadas'];
+                } else {
+                    [$rotuloExtra, $subExtra] = ['Total', 'somando os jurados'];
+                }
+                ?>
                 <div class="scoreboard-row cabecalho">
                     <strong>#</strong>
                     <span>Participante</span>
                     <i>Jurados</i>
-                    <b>Média <small>por critério, 0 a 10</small></b>
-                    <em>Total <small>somando os jurados</small></em>
+                    <b><?= h($rotuloNota) ?> <small><?= h($subNota) ?></small></b>
+                    <em><?= h($rotuloExtra) ?> <small><?= h($subExtra) ?></small></em>
                 </div>
                 <?php foreach ($ranking as $index => $row): ?>
                     <div class="scoreboard-row<?= $index === 0 ? ' lider' : '' ?>">
                         <strong><?= $index + 1 ?>º</strong>
                         <span><?= h($row['participant']['name']) ?></span>
                         <i data-rotulo="Jurados"><?= (int)($row['judge_count'] ?? 0) ?></i>
-                        <b data-rotulo="Média"><?= number_format((float)$row['score'], 2, ',', '.') ?></b>
-                        <em data-rotulo="Total"><?= number_format((float)($row['total_points'] ?? 0), 2, ',', '.') ?></em>
+                        <b data-rotulo="<?= h($rotuloNota) ?>"><?= number_format((float)$row['score'], 2, ',', '.') ?></b>
+                        <em data-rotulo="<?= h($rotuloExtra) ?>"><?php
+                            if ($publicoPlacar) {
+                                echo number_format((float)($row['pontos_publico'] ?? 0), 2, ',', '.')
+                                    . (!empty($row['posicao_publico']) ? ' <small>(' . (int)$row['posicao_publico'] . 'º)</small>' : '');
+                            } elseif ($modoPlacar === 'soma') {
+                                echo (int)($row['vote_count'] ?? 0);
+                            } else {
+                                echo number_format((float)($row['total_points'] ?? 0), 2, ',', '.');
+                            }
+                        ?></em>
                     </div>
                 <?php endforeach; ?>
                 <?php if (!$ranking): ?>
@@ -7130,8 +7714,19 @@ function render_dashboard(): void
                 <?php endif; ?>
             </div>
             <p class="dica placar-legenda">
-                <strong>Média</strong>: média ponderada de cada jurado, promediada entre os jurados — não cresce com mais jurados.
-                <strong>Total</strong>: soma de nota × peso de todos os jurados — cresce a cada avaliação. A classificação segue a média.
+                <?php if ($modoPlacar === 'media'): ?>
+                    <strong>Média</strong>: média ponderada de cada jurado, promediada entre os jurados — não cresce com mais jurados.
+                <?php elseif ($modoPlacar === 'soma'): ?>
+                    <strong>Pontos</strong>: soma de nota × peso de todos os critérios e de todos os jurados.
+                <?php else: ?>
+                    <strong>Pontos</strong>: cada jurado soma nota × peso dos critérios; vale a média desses totais.
+                <?php endif; ?>
+                <?php if ($publicoPlacar): ?>
+                    <strong>Público</strong>: pontos da colocação no voto do público — já incluídos na nota.
+                <?php elseif ($modoPlacar !== 'soma'): ?>
+                    <strong>Total</strong>: soma de nota × peso de todos os jurados — cresce a cada avaliação.
+                <?php endif; ?>
+                A classificação segue a coluna <strong><?= h($rotuloNota) ?></strong>.
             </p>
         </section>
     <?php endif; ?>
@@ -7552,6 +8147,7 @@ function render_dashboard(): void
                 'gerais' => 'Informações Gerais',
                 'periodos' => 'Períodos de Avaliação',
                 'pesos' => 'Pesos dos Critérios',
+                'calculo' => 'Cálculo da Nota',
                 'notificacoes' => 'Notificações',
                 'publicacao' => 'Publicação de Resultados',
                 'outras' => 'Outras Configurações',
@@ -7688,13 +8284,47 @@ function render_dashboard(): void
                             <?php endif; ?>
                             <button class="button primary" type="submit">Salvar Alterações</button>
                         </form>
+                    <?php elseif ($configTab === 'calculo'): ?>
+                        <?php $apuracaoCfg = vp_config($eventId); ?>
+                        <form class="form-stack calculo-form" method="post">
+                            <input type="hidden" name="action" value="update_event_config">
+                            <input type="hidden" name="config_tab" value="calculo">
+                            <input type="hidden" name="event_id" value="<?= $eventId ?>">
+                            <?php if (!vp_tabelas_ok()): ?>
+                                <div class="flash error">O banco ainda não tem as tabelas da apuração. Aplique <code>sql/mysql_17_voto_publico.sql</code> para poder mudar o cálculo.</div>
+                            <?php endif; ?>
+                            <fieldset class="calculo-opcoes">
+                                <legend>Como a nota final é calculada</legend>
+                                <?php
+                                $explicacoes = [
+                                    'soma'       => 'Todos os pontos de todos os jurados somados. Ex.: 3 jurados dando 180, 170 e 175 → 525. Quem não for avaliado por algum jurado fica com menos pontos.',
+                                    'soma_media' => 'Cada jurado soma os pontos dos critérios; a nota final é a média desses totais. Ex.: 180, 170 e 175 → 175. Não muda com o número de jurados.',
+                                    'media'      => 'Média ponderada dos critérios, promediada entre os jurados. É o cálculo que o sistema sempre usou e o que os regulamentos com nota de 0 a 10 pedem.',
+                                ];
+                                ?>
+                                <?php foreach (VP_MODOS_CALCULO as $modo => $titulo): ?>
+                                    <label class="calculo-opcao">
+                                        <input type="radio" name="modo_calculo" value="<?= h($modo) ?>" <?= $apuracaoCfg['modo_calculo'] === $modo ? 'checked' : '' ?>>
+                                        <span><strong><?= h($titulo) ?></strong><small><?= h($explicacoes[$modo]) ?></small></span>
+                                    </label>
+                                <?php endforeach; ?>
+                            </fieldset>
+                            <p class="dica">O peso de cada critério multiplica os pontos dele (peso 1 = conta uma vez). Penalidades descontam da nota final. Quando a votação do público está ligada, os pontos do público são somados a qualquer um dos três cálculos — ver <a href="?page=dashboard&section=voto-publico&event_id=<?= $eventId ?>">Voto do público</a>.</p>
+                            <button class="button primary" type="submit" <?= vp_tabelas_ok() ? '' : 'disabled' ?>>Salvar cálculo</button>
+                        </form>
                     <?php elseif ($configTab === 'pesos'): ?>
+                        <?php
+                        $somaPesosCfg = 0.0;
+                        foreach ($criteria as $criterion) {
+                            $somaPesosCfg += (float)($criterion['weight'] ?? 1);
+                        }
+                        ?>
                         <div class="table-wrap">
                             <table class="admin-table responsive-cards">
                                 <thead><tr><th>Ordem</th><th>Critério</th><th>Descrição</th><th>Peso (%)</th></tr></thead>
                                 <tbody>
                                     <?php foreach ($criteria as $index => $criterion): ?>
-                                        <tr><td data-label="Ordem"><?= $index + 1 ?></td><td data-label="Critério"><?= h($criterion['name']) ?></td><td data-label="Descrição"><?= h(($criterion['description'] ?? '') !== '' ? $criterion['description'] : 'Avaliação do participante neste critério.') ?></td><td data-label="Peso (%)"><?= number_format((float)$criterion['weight'] * 20, 0, ',', '.') ?>%</td></tr>
+                                        <tr><td data-label="Ordem"><?= $index + 1 ?></td><td data-label="Critério"><?= h($criterion['name']) ?></td><td data-label="Descrição"><?= h(($criterion['description'] ?? '') !== '' ? $criterion['description'] : 'Avaliação do participante neste critério.') ?></td><td data-label="Peso (%)"><?= $somaPesosCfg > 0 ? number_format((float)($criterion['weight'] ?? 1) / $somaPesosCfg * 100, 0, ',', '.') : '0' ?>%</td></tr>
                                     <?php endforeach; ?>
                                     <tr class="total-row"><td data-label="Resumo" colspan="3">Total dos Pesos</td><td data-label="Peso Total">100%</td></tr>
                                 </tbody>
@@ -7743,13 +8373,34 @@ function render_dashboard(): void
     render_footer();
 }
 
+/** Endereço completo do link de votação do público, a partir do pedido atual. */
+function link_votacao_publico(string $token): string
+{
+    $https = (($_SERVER['HTTPS'] ?? '') === 'on') || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
+    $host = (string)($_SERVER['HTTP_HOST'] ?? 'localhost');
+    $caminho = strtok((string)($_SERVER['REQUEST_URI'] ?? '/'), '?') ?: '/';
+
+    return ($https ? 'https' : 'http') . '://' . $host . $caminho . '?page=votar&t=' . rawurlencode($token);
+}
+
+/** Número para campo de formulário: 10 em vez de 10.00. */
+function numero_campo($valor): string
+{
+    return rtrim(rtrim(number_format((float)$valor, 2, '.', ''), '0'), '.');
+}
+
 function render_ranking_table(array $ranking): string
 {
+    /* Com votação do público, a nota final se abre em jurados + público:
+       sem isso, ninguém consegue explicar por que a ordem mudou. */
+    $primeiraLinha = $ranking[0] ?? null;
+    $comPublico = $primeiraLinha !== null
+        && vp_publico_em_uso((int)($primeiraLinha['participant']['event_id'] ?? 0));
     ob_start();
     ?>
     <div class="table-wrap">
         <table class="admin-table responsive-cards">
-            <thead><tr><th>#</th><th>Participante</th><th>Nota</th><th>Jurados</th></tr></thead>
+            <thead><tr><th>#</th><th>Participante</th><?php if ($comPublico): ?><th>Pontos dos jurados</th><th>Pontos do público</th><?php endif; ?><th>Nota final</th><th>Nº de jurados</th></tr></thead>
             <tbody>
             <?php if (!$ranking): ?>
                 <tr><td colspan="4">Sem notas ainda.</td></tr>
@@ -7758,8 +8409,12 @@ function render_ranking_table(array $ranking): string
                 <tr>
                     <td data-label="#"><?= $index + 1 ?></td>
                     <td data-label="Participante"><?= h($row['participant']['name']) ?></td>
-                    <td data-label="Nota"><?= number_format((float)$row['score'], 2, ',', '.') ?></td>
-                    <td data-label="Jurados"><?= (int)$row['judge_count'] ?></td>
+                    <?php if ($comPublico): ?>
+                        <td data-label="Pontos dos jurados"><?= number_format((float)($row['pontos_jurados'] ?? 0), 2, ',', '.') ?></td>
+                        <td data-label="Pontos do público"><?= number_format((float)($row['pontos_publico'] ?? 0), 2, ',', '.') ?> <small class="muted">(<?= !empty($row['posicao_publico']) ? (int)$row['posicao_publico'] . 'º no público, ' : '' ?><?= (int)($row['votos_publico'] ?? 0) ?> votos)</small></td>
+                    <?php endif; ?>
+                    <td data-label="Nota final"><strong><?= number_format((float)$row['score'], 2, ',', '.') ?></strong></td>
+                    <td data-label="Nº de jurados"><?= (int)$row['judge_count'] ?></td>
                 </tr>
             <?php endforeach; ?>
             </tbody>
@@ -7986,6 +8641,20 @@ function render_judge_panel(): void
     $selectedSignature = signature_payload_from_review($selectedReview);
     $scoreTotal = array_sum($scores);
     $scoreAverage = count($criteria) ? $scoreTotal / count($criteria) : 0;
+    /* Escala de cada critério (a própria, ou a do evento). Os textos de
+       instrução só dizem "de 0 a 10" quando a ficha inteira usa a mesma
+       escala; com escalas diferentes, mandam olhar cada critério. */
+    $regrasEventoJ = regras_do_evento($eventId);
+    $regrasCriterioJ = [];
+    $pontosPossiveis = 0.0;
+    foreach ($criteria as $criterion) {
+        $regrasCriterioJ[(int)$criterion['id']] = regras_do_criterio($criterion, $regrasEventoJ);
+        $pontosPossiveis += (float)$regrasCriterioJ[(int)$criterion['id']]['nota_maxima'];
+    }
+    $escalaComumJ = escala_comum_dos_criterios($criteria, $regrasEventoJ);
+    $textoEscalaJ = $escalaComumJ !== null
+        ? 'de ' . regras_faixa_curta($escalaComumJ)
+        : 'na escala indicada em cada critério';
     $deadline = (int)($_SESSION['judge_deadlines'][$eventId] ?? (time() + evaluation_seconds_from_event($event)));
     $_SESSION['judge_deadlines'][$eventId] = $deadline;
     $remaining = max(0, $deadline - time());
@@ -8218,7 +8887,7 @@ function render_judge_panel(): void
                                             ? $criterion['description']
                                             : 'Avaliação do participante neste critério.') ?>
                                     </td>
-                                    <td data-label="Escala">0,0 a 10,0</td>
+                                    <td data-label="Escala"><?= h(regras_faixa_curta($regrasCriterioJ[(int)$criterion['id']])) ?></td>
                                     <td data-label="Peso"><?= $somaPesos > 0
                                         ? number_format((float)($criterion['weight'] ?? 1) / $somaPesos * 100, 0, ',', '.')
                                         : '0' ?>%</td>
@@ -8249,7 +8918,7 @@ function render_judge_panel(): void
                 <section class="judge-list-page">
                     <div class="management-head"><h2>Instruções para Avaliação</h2></div>
                     <div class="panel instructions-panel">
-                        <div><strong>Como avaliar</strong><p>Para cada participante, atribua notas de 0,0 a 10,0 para cada critério de avaliação.</p></div>
+                        <div><strong>Como avaliar</strong><p>Para cada participante, atribua notas <?= h($textoEscalaJ) ?> para cada critério de avaliação.</p></div>
                         <div><strong>Importante</strong><p>Suas notas são confidenciais e só serão usadas na apuração do evento.</p></div>
                         <div><strong>Critérios</strong><p>A avaliação deve considerar todos os critérios e pesos definidos pelo organizador.</p></div>
                         <div><strong>Tempo</strong><p>Fique atento ao tempo disponível para avaliar todos os participantes.</p></div>
@@ -8310,14 +8979,14 @@ function render_judge_panel(): void
                         <p>Categoria: <mark><?= h($selected['category'] ?: 'Geral') ?></mark></p>
                         <p>Ordem de apresentação: <?= str_pad((string)(int)$selected['order'], 2, '0', STR_PAD_LEFT) ?></p>
                     </div>
-                    <div class="info-note">Avalie cada critério abaixo com notas de 0,0 a 10,0. Você pode alterar as notas até finalizar as avaliações.</div>
+                    <div class="info-note">Avalie cada critério abaixo com notas <?= h($textoEscalaJ) ?>. Você pode alterar as notas até finalizar as avaliações.</div>
                 </section>
 
                 <section class="judge-tutorial">
                     <button class="tutorial-toggle" type="button" data-toggle-tutorial>Como votar nesta tela</button>
                     <div class="tutorial-content" data-tutorial-content hidden>
-                        <p><strong>1.</strong> Toque primeiro na escala inteira de 0 a 10.</p>
-                        <p><strong>2.</strong> Depois selecione os décimos exibidos logo abaixo, como 9,1 até 9,9.</p>
+                        <p><strong>1.</strong> Toque na nota inteira da escala do critério<?= $escalaComumJ !== null ? ' (' . h(regras_faixa_curta($escalaComumJ)) . ')' : '' ?>, ou toque no campo Nota e digite.</p>
+                        <p><strong>2.</strong> Quando o critério aceita decimais, selecione-os logo abaixo, como 9,1 até 9,9.</p>
                         <p><strong>3.</strong> Escreva uma observação se quiser justificar a avaliação.</p>
                         <p><strong>4.</strong> Clique em Salvar Notas antes de ir para o próximo participante.</p>
                     </div>
@@ -8331,27 +9000,30 @@ function render_judge_panel(): void
                         <input type="hidden" name="signature_touch" value="<?= h($selectedSignature['touch']) ?>" data-signature-output>
                         <div class="offline-status" data-offline-status hidden></div>
                         <div class="criteria-head"><strong>Critérios de Avaliação</strong><strong>Escala</strong><strong>Nota</strong></div>
-                        <?php
-                        /* Faixa de nota do evento. A Batalha de Terceirões usa
-                           9,0 a 10,0; os demais seguem 0 a 10. */
-                        $regrasEv = regras_do_evento($eventId);
-                        $notaMin = (float)$regrasEv['nota_minima'];
-                        $notaMax = (float)$regrasEv['nota_maxima'];
-                        $limiteJust = $regrasEv['justificativa_abaixo_de'];
-
-                        /* Quantas bolhas a escala tem muda o que cabe numa
-                           linha de celular: a Batalha tem duas (9 e 10) e cabe
-                           a nota ao lado; o Festival de Calouros tem onze e
-                           precisa da linha inteira. O CSS não tem como contar
-                           os filhos antes de decidir o layout, então quem conta
-                           é quem já sabe. */
-                        $bolhas = (int)ceil($notaMax) - (int)floor($notaMin) + 1;
-                        $classeEscala = $bolhas <= 4 ? ' escala-curta' : '';
-                        ?>
                         <?php foreach ($criteria as $criterion): ?>
                             <?php
                             $current = (string)($scores[(int)$criterion['id']] ?? '');
                             $justAtual = (string)($justificativas[(int)$criterion['id']] ?? '');
+
+                            /* Faixa de nota DESTE critério: a própria, quando o
+                               administrador definiu (0 a 100, 0 a 50...), ou a
+                               do evento — 9,0 a 10,0 na Batalha de Terceirões,
+                               0 a 10 nos demais. */
+                            $regrasCrit = $regrasCriterioJ[(int)$criterion['id']];
+                            $notaMin = (float)$regrasCrit['nota_minima'];
+                            $notaMax = (float)$regrasCrit['nota_maxima'];
+                            $passoCrit = (float)$regrasCrit['passo'];
+                            $limiteJust = $regrasCrit['justificativa_abaixo_de'];
+
+                            /* Quantas bolhas a escala tem muda o que cabe numa
+                               linha de celular: a Batalha tem duas (9 e 10) e cabe
+                               a nota ao lado; o Festival de Calouros tem onze e
+                               precisa da linha inteira. Uma escala de 0 a 100
+                               teria 101 bolhas: aí não há bolha nenhuma, só o
+                               campo da nota (com o teclado de nota no tablet). */
+                            $bolhas = (int)ceil($notaMax) - (int)floor($notaMin) + 1;
+                            $comBolhas = $bolhas <= 21;
+                            $classeEscala = $bolhas <= 4 ? ' escala-curta' : ($comBolhas ? '' : ' escala-larga');
                             ?>
                             <div class="criterion-row<?= $classeEscala ?>">
                                 <div class="criterion-name">
@@ -8360,6 +9032,7 @@ function render_judge_panel(): void
                                 </div>
                                 <div class="score-picker-wrap">
                                     <span class="score-label-mobile">Escala</span>
+                                    <?php if ($comBolhas): ?>
                                     <div class="score-picker">
                                         <?php for ($score = (int)floor($notaMin); $score <= (int)ceil($notaMax); $score++): ?>
                                             <?php
@@ -8373,12 +9046,18 @@ function render_judge_panel(): void
                                         <?php endfor; ?>
                                     </div>
                                     <div class="decimal-picker" data-decimal-picker <?= $current === '' || ((float)$current >= $notaMax) ? 'hidden' : '' ?>></div>
+                                    <?php else: ?>
+                                    <div class="escala-faixa">
+                                        <strong><?= h(regras_faixa_curta($regrasCrit)) ?></strong>
+                                        <small><?= $passoCrit >= 1 ? 'notas inteiras' : 'aceita ' . h(numero_pt($passoCrit)) . ' em ' . h(numero_pt($passoCrit)) ?> · digite a nota ao lado</small>
+                                    </div>
+                                    <?php endif; ?>
                                 </div>
                                 <label class="score-input-wrap">
-                                    <span class="score-label-mobile">Nota</span>
+                                    <span class="score-label-mobile">Nota <small>(<?= h(regras_faixa_curta($regrasCrit)) ?>)</small></span>
                                     <input class="score-box" required name="scores[<?= (int)$criterion['id'] ?>]"
                                            type="number" min="<?= h((string)$notaMin) ?>" max="<?= h((string)$notaMax) ?>"
-                                           step="<?= h((string)$regrasEv['passo']) ?>" inputmode="decimal"
+                                           step="<?= h((string)$passoCrit) ?>" inputmode="decimal"
                                            value="<?= $current !== '' ? h((string)(float)$current) : '' ?>"
                                            placeholder="-" <?= $isFinished ? 'disabled' : '' ?>>
                                 </label>
@@ -8433,11 +9112,13 @@ function render_judge_panel(): void
                     </form>
                     <aside class="panel evaluation-summary">
                         <h2>Resumo da Avaliação</h2>
-                        <div class="average-ring"><strong><?= number_format($scoreAverage, 1, ',', '.') ?></strong><span>Média Geral</span></div>
+                        <?php /* Evento que soma pontos mostra o total; o que faz média, a média. */ ?>
+                        <?php $somaNoEvento = vp_config($eventId)['modo_calculo'] !== 'media'; ?>
+                        <div class="average-ring"><strong><?= number_format($somaNoEvento ? $scoreTotal : $scoreAverage, 1, ',', '.') ?></strong><span><?= $somaNoEvento ? 'Total de pontos' : 'Média Geral' ?></span></div>
                         <?php foreach ($criteria as $criterion): ?>
-                            <p><span><?= h($criterion['name']) ?></span><strong><?= isset($scores[(int)$criterion['id']]) ? number_format((float)$scores[(int)$criterion['id']], 1, ',', '.') : '-' ?></strong></p>
+                            <p><span><?= h($criterion['name']) ?></span><strong><?= isset($scores[(int)$criterion['id']]) ? number_format((float)$scores[(int)$criterion['id']], 1, ',', '.') : '-' ?><small> / <?= h(numero_pt((float)$regrasCriterioJ[(int)$criterion['id']]['nota_maxima'])) ?></small></strong></p>
                         <?php endforeach; ?>
-                        <p class="summary-total"><span>Total</span><strong><?= number_format($scoreTotal, 1, ',', '.') ?></strong></p>
+                        <p class="summary-total"><span>Total</span><strong><?= number_format($scoreTotal, 1, ',', '.') ?><small> / <?= h(numero_pt($pontosPossiveis)) ?></small></strong></p>
                         <p class="summary-average"><span>Média Geral</span><strong><?= number_format($scoreAverage, 1, ',', '.') ?></strong></p>
                     </aside>
                 </section>
@@ -8843,6 +9524,111 @@ function render_monitor_page(): void
     render_footer();
 }
 
+/**
+ * Página aberta da votação do público: ?page=votar&t=<token>.
+ *
+ * Sem login. Mostra os participantes do evento, cada um com os critérios do
+ * público e um botão de votar. O participante em que este aparelho já votou
+ * aparece como "voto registrado".
+ *
+ * Foto do participante NÃO aparece aqui: o link circula fora do sistema, e há
+ * participantes menores de idade. Nome e ordem de apresentação bastam para
+ * reconhecer quem acabou de se apresentar.
+ */
+function render_votacao_publica(): void
+{
+    $token = (string)($_GET['t'] ?? '');
+    $eventId = $token !== '' ? vp_evento_do_token($token) : null;
+    $db = db_read();
+    $event = $eventId !== null ? find_by_id($db['events'] ?? [], $eventId) : null;
+    $cfg = $eventId !== null ? vp_config($eventId) : vp_config_padrao();
+    $aberta = $event !== null && $cfg['publico_ativo'] && $cfg['publico_aberto'];
+    $criterios = $eventId !== null ? vp_criterios($eventId) : [];
+    $participantes = $eventId !== null
+        ? array_values(array_filter(
+            ordenar_participantes(items_for_event($db['participants'] ?? [], $eventId)),
+            static fn($p) => ($p['status'] ?? 'ativo') !== 'inativo'
+        ))
+        : [];
+    $votados = $aberta ? vp_ja_votados($eventId, vp_dispositivo(), vp_hash_ip($eventId, ip_visitante())) : [];
+
+    render_header('Votação do público');
+    ?>
+    <section class="vp-publico">
+        <header class="vp-publico-topo">
+            <div class="sesc-logo small"><span>Sesc</span></div>
+            <p class="eyebrow">Votação do público</p>
+            <h1><?= h($event['name'] ?? 'Votação') ?></h1>
+        </header>
+
+        <?php if ($event === null): ?>
+            <div class="vp-aviso">Este link de votação não existe ou foi trocado pela organização. Peça o link atualizado.</div>
+        <?php elseif (!$aberta): ?>
+            <div class="vp-aviso">A votação do público está encerrada no momento. Obrigado pela participação!</div>
+        <?php elseif (!$criterios || !$participantes): ?>
+            <div class="vp-aviso">A votação ainda está sendo preparada. Volte daqui a pouco.</div>
+        <?php else: ?>
+            <p class="vp-instrucao">Dê sua nota para cada apresentação. É um voto por participante neste aparelho — confira antes de enviar.</p>
+
+            <?php foreach ($participantes as $p): ?>
+                <?php $pid = (int)$p['id']; $jaVotou = isset($votados[$pid]); ?>
+                <article class="vp-card<?= $jaVotou ? ' votado' : '' ?>" id="participante-<?= $pid ?>">
+                    <div class="vp-card-topo">
+                        <span class="vp-ordem"><?= str_pad((string)(int)($p['order'] ?? 0), 2, '0', STR_PAD_LEFT) ?></span>
+                        <div>
+                            <h2><?= h($p['name']) ?></h2>
+                            <?php if (($p['song'] ?? '') !== '' || ($p['category'] ?? '') !== ''): ?>
+                                <small><?= h(trim(($p['song'] ?? '') . ((($p['song'] ?? '') !== '' && ($p['category'] ?? '') !== '') ? ' · ' : '') . ($p['category'] ?? ''))) ?></small>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+
+                    <?php if ($jaVotou): ?>
+                        <p class="vp-registrado">✓ Seu voto foi registrado</p>
+                    <?php else: ?>
+                        <form method="post" class="vp-form">
+                            <input type="hidden" name="action" value="voto_publico">
+                            <input type="hidden" name="t" value="<?= h($token) ?>">
+                            <input type="hidden" name="participant_id" value="<?= $pid ?>">
+                            <?php foreach ($criterios as $c): ?>
+                                <?php
+                                $opcoes = (int)round(($c['nota_maxima'] - $c['nota_minima']) / $c['passo']) + 1;
+                                $comBotoes = $opcoes <= 11;
+                                $casas = $c['passo'] < 1 ? 1 : 0;
+                                ?>
+                                <fieldset class="vp-criterio">
+                                    <legend><?= h($c['nome']) ?> <small><?= h(numero_pt($c['nota_minima'])) ?> a <?= h(numero_pt($c['nota_maxima'])) ?></small></legend>
+                                    <?php if ($c['descricao'] !== ''): ?><p class="vp-desc"><?= h($c['descricao']) ?></p><?php endif; ?>
+                                    <?php if ($comBotoes): ?>
+                                        <div class="vp-opcoes">
+                                            <?php for ($i = 0; $i < $opcoes; $i++): ?>
+                                                <?php $valor = $c['nota_minima'] + $i * $c['passo']; ?>
+                                                <label>
+                                                    <input type="radio" required name="notas[<?= $c['id'] ?>]" value="<?= h(number_format($valor, $casas, '.', '')) ?>">
+                                                    <span><?= h(number_format($valor, $casas, ',', '.')) ?></span>
+                                                </label>
+                                            <?php endfor; ?>
+                                        </div>
+                                    <?php else: ?>
+                                        <input class="vp-numero" type="number" required inputmode="decimal"
+                                               name="notas[<?= $c['id'] ?>]"
+                                               min="<?= h(numero_campo($c['nota_minima'])) ?>" max="<?= h(numero_campo($c['nota_maxima'])) ?>"
+                                               step="<?= h(numero_campo($c['passo'])) ?>"
+                                               placeholder="<?= h(numero_pt($c['nota_minima'])) ?> a <?= h(numero_pt($c['nota_maxima'])) ?>">
+                                    <?php endif; ?>
+                                </fieldset>
+                            <?php endforeach; ?>
+                            <button class="button primary vp-enviar" type="submit">Votar em <?= h($p['name']) ?></button>
+                        </form>
+                    <?php endif; ?>
+                </article>
+            <?php endforeach; ?>
+        <?php endif; ?>
+    </section>
+    <?php
+    render_footer();
+}
+
 handle_post();
 
 $page = $_GET['page'] ?? 'home';
@@ -8856,5 +9642,6 @@ match ($page) {
     'judge-panel' => render_judge_panel(),
     'ranking' => render_ranking_page(),
     'acompanhamento' => render_monitor_page(),
+    'votar' => render_votacao_publica(),
     default => render_login_home(),
 };

@@ -115,6 +115,146 @@ function regras_texto_faixa(array $regras): string
     return 'de ' . numero_pt($regras['nota_minima']) . ' a ' . numero_pt($regras['nota_maxima']);
 }
 
+/* ===========================================================================
+ * FAIXA POR CRITÉRIO
+ * ======================================================================== */
+
+/** Teto aceito para a nota máxima de um critério. Cabe em DECIMAL(6,2) e no
+    teclado de nota da tela do jurado, que aceita até quatro dígitos. */
+const CRITERIO_NOTA_TETO = 1000.0;
+
+/**
+ * O critério tem faixa própria? Basta a nota máxima: mínimo e passo têm
+ * padrão (0 e 1 ou 0,1) quando não informados.
+ */
+function criterio_tem_faixa_propria(array $criterio): bool
+{
+    return isset($criterio['nota_maxima'])
+        && $criterio['nota_maxima'] !== null
+        && $criterio['nota_maxima'] !== '';
+}
+
+/**
+ * As regras valendo para UM critério: as do evento, com a faixa que o
+ * critério sobrescreve.
+ *
+ * Critério sem faixa própria devolve exatamente as regras do evento — nenhum
+ * evento antigo muda de comportamento.
+ *
+ * Quando o critério tem faixa própria, os dois limiares do regulamento
+ * (justificativa abaixo de X, nota ao finalizar) são levados para a escala
+ * do critério na mesma proporção. "Nota esquecida vale 10" num evento de 9 a
+ * 10 quer dizer "vale a nota máxima"; num critério de 0 a 100, isso é 100,
+ * não 10.
+ */
+function regras_do_criterio(array $criterio, ?array $regrasEvento = null): array
+{
+    $regrasEvento ??= regras_do_evento(isset($criterio['event_id']) ? (int)$criterio['event_id'] : null);
+
+    if (!criterio_tem_faixa_propria($criterio)) {
+        return $regrasEvento + ['faixa_do_criterio' => false];
+    }
+
+    $max = (float)$criterio['nota_maxima'];
+    $min = isset($criterio['nota_minima']) && $criterio['nota_minima'] !== null && $criterio['nota_minima'] !== ''
+        ? (float)$criterio['nota_minima']
+        : 0.0;
+    $passo = isset($criterio['passo']) && $criterio['passo'] !== null && $criterio['passo'] !== '' && (float)$criterio['passo'] > 0
+        ? (float)$criterio['passo']
+        : criterio_passo_padrao($min, $max);
+
+    $regras = $regrasEvento;
+    $regras['nota_minima'] = $min;
+    $regras['nota_maxima'] = $max;
+    $regras['passo'] = $passo;
+    $regras['faixa_do_criterio'] = true;
+
+    $deMin = (float)$regrasEvento['nota_minima'];
+    $deMax = (float)$regrasEvento['nota_maxima'];
+
+    foreach (['justificativa_abaixo_de', 'nota_ao_finalizar'] as $chave) {
+        if ($regrasEvento[$chave] === null || $deMax <= $deMin) {
+            continue;
+        }
+
+        $proporcao = ((float)$regrasEvento[$chave] - $deMin) / ($deMax - $deMin);
+        $valor = $min + $proporcao * ($max - $min);
+        $regras[$chave] = round(round($valor / $passo) * $passo, 2);
+    }
+
+    return $regras;
+}
+
+/** Faixa larga anda de 1 em 1; faixa curta, de décimo em décimo. */
+function criterio_passo_padrao(float $min, float $max): float
+{
+    return ($max - $min) > 20 ? 1.0 : 0.1;
+}
+
+/**
+ * Confere a faixa digitada na tela de Critérios.
+ *
+ * @return string|null  mensagem de erro, ou null se estiver tudo certo
+ */
+function criterio_faixa_erro(float $min, float $max, float $passo): ?string
+{
+    if ($min < 0) {
+        return 'A nota mínima não pode ser negativa.';
+    }
+
+    if ($max <= $min) {
+        return 'A nota máxima precisa ser maior que a mínima.';
+    }
+
+    if ($max > CRITERIO_NOTA_TETO) {
+        return 'A nota máxima vai até ' . numero_pt(CRITERIO_NOTA_TETO) . '.';
+    }
+
+    if ($passo <= 0 || $passo > ($max - $min)) {
+        return 'O intervalo entre notas precisa ser maior que zero e caber na faixa.';
+    }
+
+    /* Passo que não divide a faixa deixaria a nota máxima inalcançável:
+       de 0 a 10 andando de 0,3 em 0,3 nunca chega a 10. */
+    $passos = ($max - $min) / $passo;
+    if (abs($passos - round($passos)) > 0.001) {
+        return 'O intervalo entre notas precisa dividir a faixa por igual (ex.: de 0 a 100 em passos de 1 ou 0,5).';
+    }
+
+    return null;
+}
+
+/**
+ * A escala que TODOS os critérios do evento compartilham, ou null se eles
+ * usam escalas diferentes. Serve para os textos de instrução: "notas de 0 a
+ * 10" só pode ser dito quando é verdade para a ficha inteira.
+ */
+function escala_comum_dos_criterios(array $criterios, array $regrasEvento): ?array
+{
+    $comum = null;
+
+    foreach ($criterios as $c) {
+        $r = regras_do_criterio($c, $regrasEvento);
+
+        if ($comum === null) {
+            $comum = $r;
+        } elseif ([$comum['nota_minima'], $comum['nota_maxima']] !== [$r['nota_minima'], $r['nota_maxima']]) {
+            return null;
+        }
+    }
+
+    return $comum ?? $regrasEvento;
+}
+
+/** "0 a 100", "9 a 10", "0,0 a 10,0" — a faixa como o jurado lê. */
+function regras_faixa_curta(array $regras): string
+{
+    $casas = $regras['passo'] < 1 ? 1 : 0;
+
+    return number_format((float)$regras['nota_minima'], $casas, ',', '.')
+        . ' a ' . number_format((float)$regras['nota_maxima'], $casas, ',', '.');
+}
+
 function numero_pt(float $n): string
 {
     return rtrim(rtrim(number_format($n, 2, ',', '.'), '0'), ',');

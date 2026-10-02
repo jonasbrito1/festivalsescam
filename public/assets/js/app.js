@@ -1,3 +1,22 @@
+/* Faixa da nota de cada campo: vem dos atributos min/max/step que o servidor
+   escreve a partir do critério (0 a 10, 9 a 10, 0 a 100...). Nada de 10 fixo
+   aqui — senão uma nota 85 num critério de 0 a 100 voltaria a ser 10. */
+const faixaDoCampo = (campo) => {
+    const min = parseFloat(campo && campo.min);
+    const max = parseFloat(campo && campo.max);
+    const passo = parseFloat(campo && campo.step);
+    return {
+        min: Number.isNaN(min) ? 0 : min,
+        max: Number.isNaN(max) ? 10 : max,
+        passo: (Number.isNaN(passo) || passo <= 0) ? 0.1 : passo,
+    };
+};
+
+const casasDoPasso = (passo) => {
+    const partes = String(passo).split('.');
+    return partes.length > 1 ? partes[1].length : 0;
+};
+
 document.addEventListener('input', (event) => {
     const input = event.target;
     if (!input.matches('.vote-form input[type="number"]')) {
@@ -9,12 +28,14 @@ document.addEventListener('input', (event) => {
         return;
     }
 
-    if (value < 0) {
-        input.value = 0;
+    const faixa = faixaDoCampo(input);
+
+    if (value < faixa.min) {
+        input.value = faixa.min;
     }
 
-    if (value > 10) {
-        input.value = 10;
+    if (value > faixa.max) {
+        input.value = faixa.max;
     }
 });
 
@@ -38,14 +59,17 @@ const syncDecimalPicker = (row, numericValue, keepOpen = true) => {
     }
 
     const value = Number(numericValue);
-    if (Number.isNaN(value)) {
+    const faixa = faixaDoCampo(row.querySelector('.score-box'));
+
+    /* Critério de notas inteiras não tem fração para escolher. */
+    if (Number.isNaN(value) || faixa.passo >= 1) {
         picker.hidden = true;
         picker.innerHTML = '';
         return;
     }
 
     const integerPart = Math.floor(value);
-    if (integerPart >= 10) {
+    if (integerPart >= faixa.max) {
         picker.hidden = true;
         picker.innerHTML = '';
         return;
@@ -59,10 +83,17 @@ const syncDecimalPicker = (row, numericValue, keepOpen = true) => {
     }
 
     picker.hidden = false;
-    const currentText = value.toFixed(1);
+    const casas = casasDoPasso(faixa.passo);
+    const currentText = value.toFixed(casas);
     let html = '';
-    for (let decimal = 0; decimal <= 9; decimal++) {
-        const decimalValue = `${integerPart}.${decimal}`;
+    /* As frações seguem o passo do critério: 0,1 → ,0 a ,9; 0,5 → ,0 e ,5. */
+    const quantas = Math.round(1 / faixa.passo);
+    for (let i = 0; i < quantas; i++) {
+        const opcao = integerPart + i * faixa.passo;
+        if (opcao < faixa.min - 1e-9 || opcao > faixa.max + 1e-9) {
+            continue;
+        }
+        const decimalValue = opcao.toFixed(casas);
         const activeClass = currentText === decimalValue ? 'active' : '';
         html += `<button type="button" class="${activeClass}" data-decimal-value="${decimalValue}">${decimalValue.replace('.', ',')}</button>`;
     }
@@ -86,9 +117,10 @@ document.addEventListener('change', (event) => {
 
     const scoreBox = row.querySelector('.score-box');
     if (scoreBox) {
-        const integerValue = Number(input.value);
-        scoreBox.value = integerValue.toFixed(1);
-        if (integerValue >= 10) {
+        const faixa = faixaDoCampo(scoreBox);
+        const integerValue = Math.min(faixa.max, Math.max(faixa.min, Number(input.value)));
+        scoreBox.value = integerValue.toFixed(casasDoPasso(faixa.passo));
+        if (integerValue >= faixa.max || faixa.passo >= 1) {
             hideAllDecimalPickers();
         } else {
             syncDecimalPicker(row, integerValue, true);
@@ -102,7 +134,8 @@ document.addEventListener('input', (event) => {
         return;
     }
 
-    const value = Math.max(0, Math.min(10, Number(String(input.value).replace(',', '.'))));
+    const faixa = faixaDoCampo(input);
+    const value = Math.max(faixa.min, Math.min(faixa.max, Number(String(input.value).replace(',', '.'))));
     if (Number.isNaN(value)) {
         return;
     }
@@ -115,12 +148,43 @@ document.addEventListener('input', (event) => {
     row.querySelectorAll('.score-picker label').forEach((label) => {
         const radio = label.querySelector('input[type="radio"]');
         const integerPart = Math.floor(value);
-        const checked = radio && ((Number(radio.value) === 10 && value === 10) || (Number(radio.value) === integerPart && value < 10));
+        const checked = radio && ((Number(radio.value) >= faixa.max && value >= faixa.max) || (Number(radio.value) === integerPart && value < faixa.max));
         label.classList.toggle('checked', checked);
         if (radio) {
             radio.checked = checked;
         }
     });
+});
+
+/* Tela de Critérios: os campos da escala personalizada só aparecem quando
+   "Personalizada" está marcada. Desabilitados quando escondidos, para não
+   travarem o envio com uma validação de campo que nem está à vista. */
+const syncEscalaNota = (fieldset) => {
+    const propria = fieldset.querySelector('[data-escala-modo][value="propria"]');
+    const campos = fieldset.querySelector('[data-escala-campos]');
+    if (!propria || !campos) {
+        return;
+    }
+    campos.hidden = !propria.checked;
+    campos.querySelectorAll('input').forEach((campo) => {
+        campo.disabled = !propria.checked;
+    });
+    const maxima = campos.querySelector('input[name="nota_maxima"]');
+    if (maxima) {
+        maxima.required = propria.checked;
+    }
+};
+
+document.querySelectorAll('[data-escala-nota]').forEach(syncEscalaNota);
+
+document.addEventListener('change', (event) => {
+    if (!event.target.matches('[data-escala-modo]')) {
+        return;
+    }
+    const fieldset = event.target.closest('[data-escala-nota]');
+    if (fieldset) {
+        syncEscalaNota(fieldset);
+    }
 });
 
 document.addEventListener('click', (event) => {
@@ -143,7 +207,7 @@ document.addEventListener('click', (event) => {
         return;
     }
 
-    scoreBox.value = decimalValue.toFixed(1);
+    scoreBox.value = decimalValue.toFixed(casasDoPasso(faixaDoCampo(scoreBox).passo));
     scoreBox.dispatchEvent(new Event('input', { bubbles: true }));
     hideAllDecimalPickers();
 });
@@ -692,3 +756,30 @@ if (offlineForm) {
 
     flushQueue();
 }
+
+/* Voto do público: copiar o link para mandar no grupo, no telão, no QR. */
+document.addEventListener('click', (event) => {
+    const botao = event.target.closest('[data-copiar]');
+    if (!botao) {
+        return;
+    }
+    const campo = botao.parentElement && botao.parentElement.querySelector('[data-copiar-origem]');
+    if (!campo) {
+        return;
+    }
+    const avisar = () => {
+        const original = botao.textContent;
+        botao.textContent = 'Copiado!';
+        window.setTimeout(() => { botao.textContent = original; }, 1800);
+    };
+    campo.select();
+    if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(campo.value).then(avisar).catch(() => {
+            document.execCommand('copy');
+            avisar();
+        });
+    } else {
+        document.execCommand('copy');
+        avisar();
+    }
+});

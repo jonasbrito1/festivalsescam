@@ -235,6 +235,15 @@ function resultado_texto(array $db, int $eventId): string
                 . ' − ' . resultado_numero((float)$linha['penalidade']) . ' de penalidade)';
         }
 
+        /* Com votação do público, a nota final é jurados + público: a
+           mensagem abre a conta para ninguém estranhar a ordem. */
+        if (!empty($linha['votos_publico']) || (float)($linha['pontos_publico'] ?? 0) > 0) {
+            $texto .= ' (jurados ' . resultado_numero((float)$linha['pontos_jurados'])
+                . ' + público ' . resultado_numero((float)$linha['pontos_publico'])
+                . (!empty($linha['posicao_publico']) ? ', ' . (int)$linha['posicao_publico'] . 'º no voto do público' : '')
+                . ')';
+        }
+
         $linhas[] = $texto;
     }
 
@@ -243,7 +252,14 @@ function resultado_texto(array $db, int $eventId): string
         ? '1 jurado, todos os critérios lançados.'
         : $andamento['total'] . ' jurados, todos finalizaram.';
 
-    if ($regras !== null && !empty($regras['propria'])) {
+    /* Com escala própria em algum critério, a faixa do evento deixa de ser a
+       escala da ficha — citá-la aqui confundiria quem lê o resultado. */
+    $faixaPorCriterio = function_exists('criterio_tem_faixa_propria') && array_filter(
+        items_for_event($db['criteria'] ?? [], $eventId),
+        'criterio_tem_faixa_propria'
+    );
+
+    if ($regras !== null && !empty($regras['propria']) && !$faixaPorCriterio) {
         $linhas[] = 'Escala do regulamento: de ' . resultado_numero((float)$regras['nota_minima'])
             . ' a ' . resultado_numero((float)$regras['nota_maxima']) . '.';
     }

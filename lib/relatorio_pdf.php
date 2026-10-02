@@ -290,28 +290,42 @@ function relatorio_pdf_evento(array $db, array $event): string
 
     pdf_titulo($doc, 'Classificação geral', 12.0);
 
+    /* Com votação do público, a nota final se abre em jurados + público. */
+    $comPublico = function_exists('vp_publico_em_uso') && vp_publico_em_uso($eventId);
+
     $linhas = [];
     foreach (ranking_for_event($db, $eventId) as $i => $r) {
+        $celulas = [($i + 1) . 'º', (string)$r['participant']['name']];
+
+        if ($comPublico) {
+            $celulas[] = relatorio_pdf_numero((float)($r['pontos_jurados'] ?? 0));
+            $celulas[] = relatorio_pdf_numero((float)($r['pontos_publico'] ?? 0));
+        }
+
+        $celulas[] = relatorio_pdf_numero((float)$r['score']);
+        $celulas[] = (float)$r['penalidade'] > 0 ? '-' . relatorio_pdf_numero((float)$r['penalidade']) : '-';
+        $celulas[] = (string)(int)$r['judge_count'];
+
         $linhas[] = [
-            'celulas' => [
-                ($i + 1) . 'º',
-                (string)$r['participant']['name'],
-                relatorio_pdf_numero((float)$r['score']),
-                (float)$r['penalidade'] > 0 ? '-' . relatorio_pdf_numero((float)$r['penalidade']) : '-',
-                (string)(int)$r['judge_count'],
-            ],
+            'celulas'  => $celulas,
             'destaque' => $i === 0,
             'negrito'  => $i === 0,
         ];
     }
 
-    pdf_tabela($doc, pdf_colunas($doc, [
+    $definicao = [
         ['rotulo' => 'Pos.',         'peso' => 0.8, 'alinhar' => 'direita'],
         ['rotulo' => 'Participante', 'peso' => 4.0],
-        ['rotulo' => 'Nota final',   'peso' => 1.3, 'alinhar' => 'direita'],
-        ['rotulo' => 'Penalidade',   'peso' => 1.2, 'alinhar' => 'direita'],
-        ['rotulo' => 'Jurados',      'peso' => 1.0, 'alinhar' => 'direita'],
-    ]), $linhas);
+    ];
+    if ($comPublico) {
+        $definicao[] = ['rotulo' => 'Júri', 'peso' => 1.1, 'alinhar' => 'direita'];
+        $definicao[] = ['rotulo' => 'Público', 'peso' => 1.1, 'alinhar' => 'direita'];
+    }
+    $definicao[] = ['rotulo' => 'Nota final', 'peso' => 1.3, 'alinhar' => 'direita'];
+    $definicao[] = ['rotulo' => 'Penalidade', 'peso' => 1.2, 'alinhar' => 'direita'];
+    $definicao[] = ['rotulo' => 'Jurados',    'peso' => 1.0, 'alinhar' => 'direita'];
+
+    pdf_tabela($doc, pdf_colunas($doc, $definicao), $linhas);
 
     pdf_titulo($doc, 'Campeão de cada quesito', 12.0);
 
