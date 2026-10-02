@@ -1,0 +1,49 @@
+# Confere cada envio antes que ele chegue ao ar.
+#
+# A publicacao em si nao acontece aqui: o servidor busca a main sozinho a cada
+# minuto (deploy/publicacao/). Esta verificacao e o aviso para quem enviou —
+# o servidor faz a mesma checagem de sintaxe e recusa o commit quebrado.
+name: Verificar
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  sintaxe:
+    name: Sintaxe PHP
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: php -l em todos os arquivos
+        run: |
+          php -v | head -1
+          falhas=0
+          while IFS= read -r -d '' arquivo; do
+            if ! saida=$(php -l "$arquivo" 2>&1); then
+              echo "::error file=$arquivo::$(echo "$saida" | grep -v '^Errors parsing' | head -1)"
+              falhas=$((falhas + 1))
+            fi
+          done < <(git ls-files -z '*.php' ':!mobile_capacitor/android/**')
+          if [ "$falhas" -gt 0 ]; then
+            echo "$falhas arquivo(s) com erro. O servidor NAO vai publicar este commit."
+            exit 1
+          fi
+          echo "Sintaxe ok."
+
+  autoria:
+    name: Autoria dos commits
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Sem linhas de co-autoria
+        run: |
+          achados=$(git log -i --grep='^co-authored-by:' --format='%h %an — %s' HEAD)
+          if [ -n "$achados" ]; then
+            echo "::error::Commits com linha Co-Authored-By (ver CONTRIBUTING.md):"
+            echo "$achados"
+            exit 1
+          fi
+          echo "Ok."

@@ -110,6 +110,18 @@ location ^~ /public/uploads/ {
 
 ---
 
+## Publicação e contribuição
+
+A `main` é a produção: cada `push` vai ao ar em https://festival.sescam.online
+em até 1 minuto. O servidor busca a `main` sozinho, confere a sintaxe e volta a
+versão anterior se o site não responder.
+
+- Como enviar ajustes: [`CONTRIBUTING.md`](CONTRIBUTING.md)
+- Como a publicação funciona e como instalar no servidor: [`deploy/publicacao/`](deploy/publicacao/)
+- Configuração do servidor (backup, logs, permissões): [`deploy/`](deploy/)
+
+---
+
 ## Estrutura
 
 ```
@@ -117,6 +129,7 @@ location ^~ /public/uploads/ {
 ├── lib/mysql.php             camada de dados: escrita dirigida, leitura, espelho
 ├── config/database.php       integração opcional com SQL Server (via env)
 ├── sql/                      schema MySQL e migrações
+├── deploy/                   configuração do servidor e publicação automática
 ├── tools/                    utilitários de linha de comando
 │   ├── importar_json_mysql.php    carga inicial do arquivo para o banco
 │   ├── comparar_json_mysql.php    confere os dois lados durante o espelho

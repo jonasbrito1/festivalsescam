@@ -1,0 +1,238 @@
+#!/usr/bin/env bash
+# ============================================================================
+# festival-publicar — publica em producao o que estiver na main do GitHub.
+#
+# Roda de minuto em minuto pelo festival-publicar.timer. Quando a main tem
+# commit novo:
+#   1. baixa o commit e confere a sintaxe de todos os .php (php -l)
+#   2. guarda uma copia do codigo que esta no ar
+#   3. copia o codigo novo para o site, sem tocar em dados, fotos e sessoes
+#   4. reaplica as permissoes e recarrega o PHP-FPM (limpa o opcache)
+#   5. confere se o site responde; se nao responder, volta a copia anterior
+#
+# Uso manual (como root):
+#   festival-publicar               publica a main, se houver commit novo
+#   festival-publicar --simular     mostra o que mudaria no site, sem alterar nada
+#   festival-publicar --forcar      publica a main mesmo que ja esteja no ar
+#   festival-publicar <commit>      publica um commit especifico (voltar versao)
+#   festival-publicar --historico   lista as ultimas publicacoes
+#
+# O banco NAO e alterado. Mudanca em sql/ e aplicada a mao, antes de publicar
+# o codigo que depende dela.
+# ============================================================================
+
+set -euo pipefail
+
+REPO_URL="https://github.com/jonasbrito1/festivalsescam.git"
+RAMO="main"
+SITE="/var/www/festival-v2"
+DOMINIO="festival.sescam.online"
+PHP_VER="8.3"
+ESTADO="/var/lib/festival-publicar"
+CLONE="$ESTADO/repo.git"
+COPIAS="/var/backups/festival-codigo"
+MANTER_COPIAS=10
+
+# Ficam fora da copia nos dois sentidos: nao vem do git e nunca sao apagados
+# no servidor. data/, storage/ e uploads guardam os dados reais do festival.
+EXCLUIR=(
+  --exclude=/data/
+  --exclude=/storage/
+  --exclude=/public/uploads/
+  --exclude=/dist/uploads/
+  --exclude=/public/assets/versao.txt
+  --exclude=/node_modules/
+  --exclude=/vendor/
+  --exclude=/mobile_capacitor/android/
+  --exclude=/.github/
+  --exclude=/.githooks/
+  --exclude=/.env
+  --exclude=/config/.env
+  --exclude='*.log'
+)
+
+VERDE='\033[0;32m'; AMARELO='\033[0;33m'; VERMELHO='\033[0;31m'; ZERO='\033[0m'
+info()  { echo -e "${VERDE}==>${ZERO} $*"; }
+aviso() { echo -e "${AMARELO} !${ZERO} $*"; }
+erro()  { echo -e "${VERMELHO}ERRO:${ZERO} $*" >&2; exit 1; }
+
+[[ $EUID -eq 0 ]] || erro "Execute como root."
+mkdir -p "$ESTADO" "$COPIAS"
+
+if [[ "${1:-}" == "--historico" ]]; then
+  tail -n 30 "$ESTADO/historico" 2>/dev/null || echo "Nenhuma publicacao registrada."
+  exit 0
+fi
+
+# Uma publicacao por vez: o timer nao dispara outra enquanto esta roda.
+exec 9>"$ESTADO/.trava"
+flock -n 9 || exit 0
+
+MODO="normal"; PEDIDO=""
+case "${1:-}" in
+  "")          ;;
+  --simular)   MODO="simular" ;;
+  --forcar)    MODO="forcar" ;;
+  -*)          erro "Opcao desconhecida: $1" ;;
+  *)           MODO="commit"; PEDIDO="$1" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# 1. Commit a publicar
+# ---------------------------------------------------------------------------
+if [[ ! -d "$CLONE" ]]; then
+  git clone -q --bare "$REPO_URL" "$CLONE"
+fi
+
+# Sem GitHub, nao ha o que fazer agora; o timer tenta de novo em 1 minuto.
+if ! git -C "$CLONE" fetch -q --prune "$REPO_URL" "+refs/heads/$RAMO:refs/heads/$RAMO" 2>/dev/null; then
+  [[ "$MODO" == "normal" ]] && exit 0
+  erro "Nao foi possivel buscar o repositorio no GitHub."
+fi
+
+if [[ "$MODO" == "commit" ]]; then
+  ALVO=$(git -C "$CLONE" rev-parse --verify -q "$PEDIDO^{commit}") \
+    || erro "Commit '$PEDIDO' nao encontrado no repositorio."
+else
+  ALVO=$(git -C "$CLONE" rev-parse "refs/heads/$RAMO")
+fi
+
+NO_AR=$(cat "$ESTADO/no-ar" 2>/dev/null || true)
+RECUSADO=$(cat "$ESTADO/recusado" 2>/dev/null || true)
+
+if [[ "$MODO" == "normal" ]]; then
+  # Ja publicado, ou ja recusado: so um commit novo muda o quadro.
+  [[ "$ALVO" == "$NO_AR" || "$ALVO" == "$RECUSADO" ]] && exit 0
+fi
+
+CURTO=${ALVO:0:7}
+DESCRICAO=$(git -C "$CLONE" log -1 --format='%an | %s' "$ALVO")
+
+registrar() {
+  printf '%s | %s | %-9s | %s\n' "$(date '+%Y-%m-%d %H:%M')" "$CURTO" "$1" "$DESCRICAO" \
+    >> "$ESTADO/historico"
+}
+
+info "Commit $CURTO — $DESCRICAO"
+
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+mkdir "$TMP/codigo"
+git -C "$CLONE" archive "$ALVO" | tar -x -C "$TMP/codigo"
+
+# ---------------------------------------------------------------------------
+# 2. Sintaxe PHP — erro de sintaxe derruba o site inteiro, entao nao passa
+# ---------------------------------------------------------------------------
+PHP_BIN=$(command -v "php$PHP_VER" || command -v php) || erro "PHP CLI nao encontrado."
+
+FALHAS=0
+while IFS= read -r -d '' arquivo; do
+  if ! saida=$("$PHP_BIN" -l "$arquivo" 2>&1); then
+    echo "${saida//"$TMP/codigo/"/}" | grep -v '^Errors parsing' >&2
+    FALHAS=$((FALHAS + 1))
+  fi
+done < <(find "$TMP/codigo" -name '*.php' -not -path "$TMP/codigo/mobile_capacitor/android/*" -print0)
+
+if (( FALHAS > 0 )); then
+  if [[ "$MODO" != "simular" ]]; then
+    echo "$ALVO" > "$ESTADO/recusado"
+    registrar "RECUSADO"
+  fi
+  erro "$FALHAS arquivo(s) PHP com erro de sintaxe. Nada foi publicado; o site segue em ${NO_AR:0:7}."
+fi
+
+# ---------------------------------------------------------------------------
+# Copia do codigo para o site.
+#
+# --checksum e sem -t: arquivo igual nao e tocado e mantem a data; arquivo
+# alterado ganha a data de agora. O asset() do PHP monta o ?v= pela data do
+# arquivo, entao so o CSS/JS que mudou de fato forca o navegador a baixar.
+# ---------------------------------------------------------------------------
+copiar() {  # copiar <origem> [opcoes extras do rsync]
+  local origem=$1; shift
+  rsync -rl --checksum --delete "${EXCLUIR[@]}" "$@" "$origem"/ "$SITE"/
+}
+
+if [[ "$MODO" == "simular" ]]; then
+  info "Simulacao: o que mudaria em $SITE (nada sera alterado)"
+  copiar "$TMP/codigo" --dry-run --itemize-changes | sed 's/^/    /' || true
+  echo
+  echo "  Linhas '*deleting' = arquivos que existem no servidor e nao existem no git."
+  echo "  Se algum deles for correcao feita direto no servidor, leve-a para o git antes."
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# 3. Copia de seguranca do codigo no ar
+# ---------------------------------------------------------------------------
+COPIA="$COPIAS/codigo-$(date +%Y%m%d-%H%M%S)-${NO_AR:0:7}.tar.gz"
+tar -czf "$COPIA" -C "$SITE" \
+  --exclude=./data --exclude=./storage --exclude=./public/uploads \
+  --exclude=./dist/uploads --exclude=./node_modules --exclude=./vendor .
+ls -1t "$COPIAS"/codigo-*.tar.gz | tail -n +$((MANTER_COPIAS + 1)) | xargs -r rm -f
+
+# ---------------------------------------------------------------------------
+# 4. Publica, ajusta permissoes, recarrega o PHP
+# ---------------------------------------------------------------------------
+permissoes() {
+  # So o codigo. data/, storage/ e uploads sao do PHP e ficam como estao.
+  codigo() {
+    find "$SITE" \( -path "$SITE/data" -o -path "$SITE/storage" -o -path "$SITE/public/uploads" \) \
+      -prune -o "$@"
+  }
+  codigo -exec chown -h root:festival {} +
+  codigo -type d -exec chmod 750 {} +
+  codigo -type f -exec chmod 640 {} +
+
+  # Servidos ao navegador, mas NAO gravaveis pelo PHP (ver deploy/README.md)
+  find "$SITE/public/assets" -type d -exec chmod 755 {} +
+  find "$SITE/public/assets" -type f -exec chmod 644 {} +
+  chmod 755 "$SITE" "$SITE/public"
+}
+
+responde() {
+  local codigo
+  # -k: a conexao e com o proprio servidor; o que importa aqui e o PHP responder.
+  codigo=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 20 \
+    --resolve "$DOMINIO:443:127.0.0.1" "https://$DOMINIO/" || echo 000)
+  case "$codigo" in
+    200|301|302|303) return 0 ;;
+    *) aviso "Site respondeu HTTP $codigo."; return 1 ;;
+  esac
+}
+
+info "Publicando $CURTO em $SITE…"
+copiar "$TMP/codigo"
+permissoes
+printf '%s\n%s\n' "$ALVO" "$(date '+%Y-%m-%d %H:%M:%S')" > "$SITE/public/assets/versao.txt"
+chmod 644 "$SITE/public/assets/versao.txt"
+systemctl reload "php${PHP_VER}-fpm"
+
+# ---------------------------------------------------------------------------
+# 5. Conferencia — se o site nao responde, volta o que estava no ar
+# ---------------------------------------------------------------------------
+sleep 2
+if responde; then
+  echo "$ALVO" > "$ESTADO/no-ar"
+  rm -f "$ESTADO/recusado"
+  registrar "PUBLICADO"
+  info "Publicado: $CURTO"
+  exit 0
+fi
+
+aviso "Voltando a versao anterior (${NO_AR:0:7})…"
+mkdir "$TMP/anterior"
+tar -xzf "$COPIA" -C "$TMP/anterior"
+copiar "$TMP/anterior"
+permissoes
+if [[ -n "$NO_AR" ]]; then
+  printf '%s
+%s
+' "$NO_AR" "$(date '+%Y-%m-%d %H:%M:%S')" > "$SITE/public/assets/versao.txt"
+else
+  rm -f "$SITE/public/assets/versao.txt"
+fi
+systemctl reload "php${PHP_VER}-fpm"
+echo "$ALVO" > "$ESTADO/recusado"
+registrar "REVERTIDO"
+erro "O site nao respondeu com $CURTO. A versao anterior foi restaurada."

@@ -1,0 +1,8 @@
+# Scripts executados no Linux e ganchos do git: sempre com fim de linha LF,
+# mesmo quando o clone e feito no Windows.
+*.sh                              text eol=lf
+.githooks/*                       text eol=lf
+deploy/festival-backup            text eol=lf
+deploy/publicacao/festival-publicar text eol=lf
+deploy/publicacao/*.service       text eol=lf
+deploy/publicacao/*.timer         text eol=lf

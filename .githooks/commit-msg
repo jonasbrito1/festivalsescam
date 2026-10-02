@@ -1,0 +1,4 @@
+#!/bin/sh
+# Tira linhas "Co-Authored-By:" da mensagem: o commit e de quem o faz.
+# Ativar uma vez no clone:  git config core.hooksPath .githooks
+sed -i.tmp '/^[Cc]o-[Aa]uthored-[Bb]y:/d' "$1" && rm -f "$1.tmp"

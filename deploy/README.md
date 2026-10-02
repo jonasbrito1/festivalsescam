@@ -4,6 +4,9 @@ Arquivos que vivem **fora** da pasta da aplicação, mas fazem parte da
 instalação. Guardados aqui para que uma reconstrução do servidor não perca o
 que já foi ajustado.
 
+Publicação automática do código a cada `push` na `main`:
+[`publicacao/`](publicacao/).
+
 ---
 
 ## Backup automático
