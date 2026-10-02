@@ -11,9 +11,10 @@ servidor fica guardada no GitHub e nenhuma porta precisa ser aberta.
 git push  ──►  GitHub (main)  ◄── servidor confere a cada minuto
                     │                     │
                     │                     ├─ php -l em todos os .php ── erro? não publica
-          Actions: "Verificar"            ├─ guarda cópia do código no ar
-          (aviso para quem enviou)        ├─ copia o código novo (dados intocados)
-                                          ├─ permissões + reload do PHP-FPM
+          Actions: "Verificar"            ├─ migrações novas de sql/ (backup antes) ── erro? não publica
+          (php -l, migrações,             ├─ guarda cópia do código no ar
+           autoria: aviso para quem       ├─ copia o código novo (dados intocados)
+           enviou)                        ├─ permissões + reload do PHP-FPM
                                           └─ site respondeu? não → volta a cópia
 ```
 
@@ -25,7 +26,6 @@ git push  ──►  GitHub (main)  ◄── servidor confere a cada minuto
 | `storage/` | sessões e logs |
 | `public/uploads/` | fotos de participantes e jurados |
 | `.env`, `config/.env` | senhas |
-| banco MySQL | migração em `sql/` é aplicada **à mão** |
 | `deploy/`, `mobile_pwa/`, `mobile_capacitor/`, `migrate_json_to_sqlsrv.php` | estão no git, mas não são do site — nunca vão para o docroot |
 
 Arquivo que existe no servidor e **não** existe no git é apagado — com exceção
@@ -99,7 +99,9 @@ novo assim que ela receber outro commit. A volta definitiva é `git revert` +
 **Estados no histórico:**
 
 - `PUBLICADO` — no ar
-- `RECUSADO` — erro de sintaxe PHP; o site seguiu na versão anterior
+- `BANCO` — migração aplicada
+- `RECUSADO` — erro de sintaxe PHP ou migração que falhou; o código não foi
+  ao ar e o site seguiu na versão anterior
 - `REVERTIDO` — publicou, o site não respondeu, a versão anterior voltou
 
 Um commit recusado ou revertido não é tentado de novo: o próximo `push` com a
@@ -107,6 +109,38 @@ correção é que destrava.
 
 **Cópias do código:** as 10 últimas ficam em `/var/backups/festival-codigo/`
 (só código; dados e fotos estão no `festival-backup`).
+
+---
+
+## Migrações do banco
+
+Todo arquivo `sql/mysql_NN_descricao.sql` que ainda não rodou é aplicado
+**antes** do código, em ordem de número, como root pelo socket do MySQL. O
+usuário da aplicação continua sem permissão de alterar tabelas.
+
+- **Controle:** tabela `migracoes_aplicadas` (arquivo + sha256 do conteúdo).
+  Arquivo **alterado** roda de novo — por isso toda migração precisa poder
+  rodar mais de uma vez (o padrão dos arquivos de `sql/`).
+- **Linha de base:** na primeira execução, a tabela é criada e as migrações
+  até a `mysql_17` são só registradas, sem rodar — já tinham sido aplicadas à
+  mão.
+- **Backup:** antes de cada lote, `mysqldump` em
+  `/var/backups/festival-banco/` (10 últimos).
+- **Erro:** a migração que falha trava a publicação. O código não vai ao ar,
+  o histórico registra `RECUSADO` e a mensagem aponta o backup. MySQL não
+  desfaz alteração de estrutura pela metade: confira o banco antes de
+  corrigir e enviar de novo.
+- **Voltar versão** (`festival-publicar <commit>`) mexe só no código.
+  Migração aplicada fica — o código anterior precisa funcionar com ela.
+- `--simular` lista as migrações que seriam aplicadas.
+- `mysql_schema.sql` é o banco completo para instalação nova e nunca roda
+  sozinho.
+
+Restaurar um backup:
+
+```bash
+gunzip -c /var/backups/festival-banco/ARQUIVO.sql.gz | mysql festival_v2
+```
 
 ### Atualizar o próprio script
 

@@ -87,13 +87,30 @@ git push
 
 ## Banco de dados
 
-A publicação **não** altera o banco. Mudança de estrutura:
+Mudança no banco vai junto com o código, num arquivo novo em `sql/`. A
+publicação aplica sozinha, **antes** do código, com backup do banco.
 
-1. Crie o arquivo em `sql/`, seguindo a numeração dos que já existem.
-2. Combine com o Jonas: ele aplica no banco de produção **antes** do `push`
-   do código que depende da mudança.
-3. Se possível, faça o código funcionar com o banco antigo e o novo — assim a
-   ordem não importa.
+1. Nome: `sql/mysql_NN_descricao.sql`, com o próximo número
+   (`mysql_18_...`, `mysql_19_...`). Só letras, números e `_` na descrição.
+2. Comece com `USE festival_v2;`.
+3. **Precisa poder rodar mais de uma vez** sem erro: `CREATE TABLE IF NOT
+   EXISTS`, e para coluna/índice o teste em `information_schema` que os
+   arquivos existentes já usam. Arquivo alterado depois de aplicado roda de
+   novo.
+4. O código anterior precisa continuar funcionando com o banco já migrado:
+   se a publicação do código falhar, só o código volta.
+5. Mudança que **apaga ou reescreve dado** (`DROP`, `DELETE`, `UPDATE` em
+   massa): combine com o Jonas antes do `push`.
+
+A verificação **Migrações do banco** do GitHub monta um banco do zero e roda
+todas as migrações duas vezes. Se ficar vermelha, corrija antes que chegue à `main`.
+Para testar na sua máquina, num MySQL de teste:
+`tools/testar_migracoes.sh --apagar-banco-de-teste` (apaga o `festival_v2`
+desse MySQL).
+
+Se uma migração falhar no servidor, o código **não** vai ao ar. Avise o
+Jonas: MySQL não desfaz alteração de estrutura pela metade, então o banco
+precisa ser conferido antes do próximo envio.
 
 ---
 

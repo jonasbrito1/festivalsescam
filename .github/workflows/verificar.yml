@@ -2,7 +2,7 @@
 #
 # A publicacao em si nao acontece aqui: o servidor busca a main sozinho a cada
 # minuto (deploy/publicacao/). Esta verificacao e o aviso para quem enviou —
-# o servidor faz a mesma checagem de sintaxe e recusa o commit quebrado.
+# o servidor recusa o commit com erro de sintaxe ou com migracao que falha.
 name: Verificar
 
 on:
@@ -30,6 +30,25 @@ jobs:
             exit 1
           fi
           echo "Sintaxe ok."
+
+  migracoes:
+    name: Migrações do banco
+    runs-on: ubuntu-24.04
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: teste
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h127.0.0.1 -uroot -pteste"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Schema + todas as migrações, duas vezes
+        env:
+          MYSQL_OPCOES: -h127.0.0.1 -uroot -pteste
+        run: tools/testar_migracoes.sh --apagar-banco-de-teste
 
   autoria:
     name: Autoria dos commits

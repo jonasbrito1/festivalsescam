@@ -45,8 +45,11 @@ cd festivalsescam
 
 ```bash
 mysql -u root -p < sql/mysql_schema.sql
-mysql -u root -p festival_v2 < sql/mysql_02_cascade.sql
+for f in $(ls sql/mysql_[0-9]*_*.sql | sort -V); do mysql -u root -p festival_v2 < "$f"; done
 ```
+
+Em produção, as migrações novas são aplicadas pela publicação automática
+([`deploy/publicacao/`](deploy/publicacao/)).
 
 Crie um usuário sem privilégios de DDL — a aplicação só precisa manipular dados:
 

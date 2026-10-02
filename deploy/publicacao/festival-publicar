@@ -5,20 +5,24 @@
 # Roda de minuto em minuto pelo festival-publicar.timer. Quando a main tem
 # commit novo:
 #   1. baixa o commit e confere a sintaxe de todos os .php (php -l)
-#   2. guarda uma copia do codigo que esta no ar
-#   3. copia o codigo novo para o site, sem tocar em dados, fotos e sessoes
-#   4. reaplica as permissoes e recarrega o PHP-FPM (limpa o opcache)
-#   5. confere se o site responde; se nao responder, volta a copia anterior
+#   2. aplica no banco as migracoes novas de sql/ (com backup antes)
+#   3. guarda uma copia do codigo que esta no ar
+#   4. copia o codigo novo para o site, sem tocar em dados, fotos e sessoes
+#   5. reaplica as permissoes e recarrega o PHP-FPM (limpa o opcache)
+#   6. confere se o site responde; se nao responder, volta a copia anterior
 #
 # Uso manual (como root):
 #   festival-publicar               publica a main, se houver commit novo
-#   festival-publicar --simular     mostra o que mudaria no site, sem alterar nada
+#   festival-publicar --simular     mostra o que mudaria no site e no banco, sem alterar nada
 #   festival-publicar --forcar      publica a main mesmo que ja esteja no ar
-#   festival-publicar <commit>      publica um commit especifico (voltar versao)
+#   festival-publicar <commit>      publica um commit especifico (voltar versao;
+#                                   so o codigo, o banco nao e tocado)
 #   festival-publicar --historico   lista as ultimas publicacoes
 #
-# O banco NAO e alterado. Mudanca em sql/ e aplicada a mao, antes de publicar
-# o codigo que depende dela.
+# Migracoes: todo sql/mysql_NN_*.sql que ainda nao rodou, em ordem de numero.
+# O controle e por nome E conteudo: arquivo alterado roda de novo. Por isso
+# toda migracao precisa poder rodar mais de uma vez. Migracao com erro trava a
+# publicacao: o codigo nao vai ao ar e o backup do banco fica indicado.
 # ============================================================================
 
 set -euo pipefail
@@ -32,6 +36,12 @@ ESTADO="/var/lib/festival-publicar"
 CLONE="$ESTADO/repo.git"
 COPIAS="/var/backups/festival-codigo"
 MANTER_COPIAS=10
+
+BANCO="festival_v2"
+COPIAS_BANCO="/var/backups/festival-banco"
+# Ate esta, as migracoes ja tinham sido aplicadas a mao quando a aplicacao
+# automatica entrou (02/10/2026). Sao so registradas, nao rodam de novo.
+LINHA_DE_BASE=17
 
 # Ficam fora da copia nos dois sentidos: nao vem do git e nunca sao apagados
 # no servidor. data/, storage/ e uploads guardam os dados reais do festival.
@@ -64,7 +74,7 @@ aviso() { echo -e "${AMARELO} !${ZERO} $*"; }
 erro()  { echo -e "${VERMELHO}ERRO:${ZERO} $*" >&2; exit 1; }
 
 [[ $EUID -eq 0 ]] || erro "Execute como root."
-mkdir -p "$ESTADO" "$COPIAS"
+mkdir -p "$ESTADO" "$COPIAS" "$COPIAS_BANCO"
 
 if [[ "${1:-}" == "--historico" ]]; then
   tail -n 30 "$ESTADO/historico" 2>/dev/null || echo "Nenhuma publicacao registrada."
@@ -115,8 +125,8 @@ fi
 CURTO=${ALVO:0:7}
 DESCRICAO=$(git -C "$CLONE" log -1 --format='%an | %s' "$ALVO")
 
-registrar() {
-  printf '%s | %s | %-9s | %s\n' "$(date '+%Y-%m-%d %H:%M')" "$CURTO" "$1" "$DESCRICAO" \
+registrar() {  # registrar <estado> [descricao]
+  printf '%s | %s | %-9s | %s\n' "$(date '+%Y-%m-%d %H:%M')" "$CURTO" "$1" "${2:-$DESCRICAO}" \
     >> "$ESTADO/historico"
 }
 
@@ -149,6 +159,95 @@ if (( FALHAS > 0 )); then
 fi
 
 # ---------------------------------------------------------------------------
+# 3. Migracoes do banco
+#
+# Rodam como root pelo socket local do MySQL. O usuario da aplicacao nao tem
+# permissao de alterar tabelas, e continua sem ter.
+# ---------------------------------------------------------------------------
+sql() { mysql --batch --skip-column-names "$BANCO" "$@"; }
+
+numero() { local n=${1#mysql_}; n=${n%%_*}; echo $((10#$n)); }
+
+# So nome no padrao entra: o nome vai dentro de SQL no controle.
+nome_valido() { [[ "$1" =~ ^mysql_[0-9]+_[A-Za-z0-9_]+\.sql$ ]]; }
+
+CONTROLE=0
+sql -e "SELECT 1 FROM migracoes_aplicadas LIMIT 1" >/dev/null 2>&1 && CONTROLE=1
+
+if (( CONTROLE == 0 )) && [[ "$MODO" != "simular" ]]; then
+  info "Criando o controle de migracoes (linha de base: ate a $LINHA_DE_BASE)…"
+  sql <<'SQL'
+CREATE TABLE IF NOT EXISTS migracoes_aplicadas (
+    arquivo     VARCHAR(190) NOT NULL,
+    hash        CHAR(64)     NOT NULL,   -- sha256 do conteudo aplicado
+    commit_sha  VARCHAR(40)  NOT NULL,
+    aplicada    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (arquivo, hash)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+SQL
+  CONTROLE=1
+  for f in "$TMP/codigo"/sql/mysql_[0-9]*_*.sql; do
+    [[ -f "$f" ]] || continue
+    nome=$(basename "$f")
+    nome_valido "$nome" || continue
+    (( $(numero "$nome") <= LINHA_DE_BASE )) || continue
+    sql -e "INSERT IGNORE INTO migracoes_aplicadas (arquivo, hash, commit_sha)
+            VALUES ('$nome', '$(sha256sum "$f" | cut -c1-64)', 'linha-de-base')"
+  done
+fi
+
+PENDENTES=()
+while IFS= read -r f; do
+  nome=$(basename "$f")
+  if ! nome_valido "$nome"; then
+    aviso "Ignorado (nome fora do padrao mysql_NN_descricao.sql): sql/$nome"
+    continue
+  fi
+  if (( CONTROLE == 1 )); then
+    hash=$(sha256sum "$f" | cut -c1-64)
+    (( $(sql -e "SELECT COUNT(*) FROM migracoes_aplicadas WHERE arquivo='$nome' AND hash='$hash'") > 0 )) && continue
+  else
+    (( $(numero "$nome") <= LINHA_DE_BASE )) && continue   # simulacao antes da 1a vez
+  fi
+  PENDENTES+=("$f")
+done < <(find "$TMP/codigo/sql" -maxdepth 1 -name 'mysql_[0-9]*_*.sql' 2>/dev/null | sort -V)
+
+if [[ "$MODO" == "commit" ]] && (( ${#PENDENTES[@]} > 0 )); then
+  aviso "Voltando versao: ${#PENDENTES[@]} migracao(oes) deste commit diferem do banco e NAO serao aplicadas."
+  PENDENTES=()
+fi
+
+if [[ "$MODO" == "simular" ]]; then
+  if (( ${#PENDENTES[@]} > 0 )); then
+    info "Migracoes que seriam aplicadas no banco, nesta ordem:"
+    for f in "${PENDENTES[@]}"; do echo "    sql/$(basename "$f")"; done
+  else
+    info "Nenhuma migracao pendente no banco."
+  fi
+elif (( ${#PENDENTES[@]} > 0 )); then
+  BACKUP_BANCO="$COPIAS_BANCO/$BANCO-$(date +%Y%m%d-%H%M%S)-antes-$CURTO.sql.gz"
+  info "Backup do banco antes das migracoes: $BACKUP_BANCO"
+  mysqldump --single-transaction --routines --triggers "$BANCO" | gzip > "$BACKUP_BANCO" \
+    || erro "Backup do banco falhou. Nenhuma migracao foi aplicada; nada foi publicado."
+  ls -1t "$COPIAS_BANCO"/*.sql.gz | tail -n +$((MANTER_COPIAS + 1)) | xargs -r rm -f
+
+  for f in "${PENDENTES[@]}"; do
+    nome=$(basename "$f")
+    info "Aplicando sql/$nome…"
+    if ! saida=$(sql < "$f" 2>&1 >/dev/null); then
+      echo "$saida" >&2
+      echo "$ALVO" > "$ESTADO/recusado"
+      registrar "RECUSADO" "migracao sql/$nome falhou"
+      erro "A migracao sql/$nome falhou. O codigo NAO foi publicado; o site segue em ${NO_AR:0:7}.
+       O banco pode ter ficado parcialmente alterado. Backup de antes: $BACKUP_BANCO"
+    fi
+    sql -e "INSERT IGNORE INTO migracoes_aplicadas (arquivo, hash, commit_sha)
+            VALUES ('$nome', '$(sha256sum "$f" | cut -c1-64)', '$ALVO')"
+    registrar "BANCO" "sql/$nome aplicada"
+  done
+fi
+
+# ---------------------------------------------------------------------------
 # Copia do codigo para o site.
 #
 # --checksum e sem -t: arquivo igual nao e tocado e mantem a data; arquivo
@@ -170,7 +269,7 @@ if [[ "$MODO" == "simular" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Copia de seguranca do codigo no ar
+# 4. Copia de seguranca do codigo no ar
 # ---------------------------------------------------------------------------
 COPIA="$COPIAS/codigo-$(date +%Y%m%d-%H%M%S)-${NO_AR:0:7}.tar.gz"
 tar -czf "$COPIA" -C "$SITE" \
@@ -179,7 +278,7 @@ tar -czf "$COPIA" -C "$SITE" \
 ls -1t "$COPIAS"/codigo-*.tar.gz | tail -n +$((MANTER_COPIAS + 1)) | xargs -r rm -f
 
 # ---------------------------------------------------------------------------
-# 4. Publica, ajusta permissoes, recarrega o PHP
+# 5. Publica, ajusta permissoes, recarrega o PHP
 # ---------------------------------------------------------------------------
 permissoes() {
   # So o codigo. data/, storage/ e uploads sao do PHP e ficam como estao.
@@ -216,7 +315,9 @@ chmod 644 "$SITE/public/assets/versao.txt"
 systemctl reload "php${PHP_VER}-fpm"
 
 # ---------------------------------------------------------------------------
-# 5. Conferencia — se o site nao responde, volta o que estava no ar
+# 6. Conferencia — se o site nao responde, volta o que estava no ar
+# (so o codigo: migracao ja aplicada fica; por isso precisa funcionar
+# tambem com o codigo anterior)
 # ---------------------------------------------------------------------------
 sleep 2
 if responde; then
