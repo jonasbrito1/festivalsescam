@@ -3818,18 +3818,29 @@ td {
 
 /* ---------------------------------------------------------------------------
    Voto do público — página aberta (?page=votar)
-   Feita para celular: uma coluna, alvos grandes, nada do menu do sistema.
+
+   Quem abre está sentado na plateia, com a luz apagada, segurando o celular.
+   Por isso a página é escura (azul do Sesc, não branca: não ofusca nem
+   ilumina o rosto de quem está do lado) e tem UM elemento que acende — a
+   nota escolhida, em amarelo Sesc, como um foco de luz. O resto fica quieto.
    ------------------------------------------------------------------------- */
-/* Mesmo tema Sesc das telas de acesso. As variáveis de cor são declaradas
-   por página (app.css), e sem esta lista a página do público ficaria sem
-   elas: botão marcado e número da ordem sumiam, branco no branco. */
 .page-votar {
     --sesc-blue: #002f8f;
     --sesc-blue-dark: #00247a;
     --sesc-yellow: #ffc400;
     --sesc-text: #07143d;
     --sesc-muted: #536078;
-    background: #f7f9fd;
+
+    --vp-noite: #001a52;       /* fundo da página */
+    --vp-cartao: #0a2a6e;      /* cartão do participante */
+    --vp-borda: #1d3f8c;
+    --vp-texto: #f3f6ff;
+    --vp-suave: #a9b8de;
+    --vp-foco: #ffc400;        /* a nota escolhida */
+    --vp-ok: #4fd18b;
+
+    color: var(--vp-texto);
+    background: var(--vp-noite);
 }
 
 /* Quem vota não precisa do menu do sistema (Administrador, Jurado...). */
@@ -3843,186 +3854,487 @@ td {
     padding: 0;
 }
 
-.vp-publico-topo .sesc-logo.small {
-    margin-top: var(--esp-4);
-    font-size: 54px;
+/* O aviso de "voto registrado" ou de erro desce para o pé da tela, onde o
+   polegar está, em vez de ficar lá no topo, longe do cartão votado. */
+.page-votar .flash {
+    position: fixed;
+    top: auto;
+    left: 50%;
+    bottom: 16px;
+    z-index: 50;
+    width: min(560px, calc(100% - 32px));
+    margin: 0;
+    transform: translateX(-50%);
+    border-radius: 14px;
+    box-shadow: 0 12px 32px rgba(0, 10, 40, .45);
+    animation: vp-aviso 4.5s ease forwards;
 }
 
-.vp-publico-topo .sesc-logo.small::before {
-    border-top-width: 9px;
+@keyframes vp-aviso {
+    0%   { opacity: 0; transform: translate(-50%, 12px); }
+    8%   { opacity: 1; transform: translate(-50%, 0); }
+    85%  { opacity: 1; transform: translate(-50%, 0); }
+    100% { opacity: 0; transform: translate(-50%, 12px); visibility: hidden; }
 }
 
-.vp-publico {
+.vp-palco {
+    min-height: 100vh;
+}
+
+/* --- Topo ----------------------------------------------------------------- */
+.vp-hero {
+    position: relative;
     display: grid;
-    gap: var(--esp-4);
-    width: min(640px, 100%);
+    align-items: end;
+    justify-items: center;
+    width: min(760px, 100%);
     margin: 0 auto;
-    padding: var(--esp-4) 16px var(--esp-6);
+    padding: 56px 20px 28px;
+    text-align: center;
+    background:
+        radial-gradient(120% 80% at 50% 0%, rgba(255, 196, 0, .10), transparent 60%),
+        linear-gradient(180deg, var(--sesc-blue) 0%, var(--vp-noite) 100%);
 }
 
-.vp-publico-topo {
+.vp-hero-logo {
+    margin-bottom: 18px;
+    color: #fff;
+}
+
+/* Com capa: a arte do evento aparece INTEIRA no topo — sem corte e sem
+   texto por cima, porque a arte costuma trazer o próprio título e logos. A
+   borda de baixo se dissolve no fundo, e o nome do evento vem logo abaixo. */
+.vp-hero.com-capa {
+    display: block;
+    padding: 0 0 24px;
+    background: none;
+}
+
+.vp-hero-capa {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-height: 72vh;
+    object-fit: contain;
+    -webkit-mask-image: linear-gradient(180deg, #000 78%, transparent 100%);
+    mask-image: linear-gradient(180deg, #000 78%, transparent 100%);
+}
+
+.vp-hero.com-capa .vp-hero-texto {
+    margin-top: -6px;
+    padding: 0 20px;
+}
+
+.vp-hero-texto {
+    position: relative;
+    z-index: 1;
     display: grid;
     justify-items: center;
-    gap: var(--esp-1);
-    text-align: center;
+    gap: 10px;
 }
 
-.vp-publico-topo h1 {
+.vp-selo {
+    padding: 4px 12px;
+    border-radius: 999px;
+    color: var(--vp-noite);
+    background: var(--vp-foco);
+    font-size: .8rem;
+    font-weight: 800;
+    letter-spacing: .01em;
+}
+
+.vp-hero h1 {
+    max-width: 22ch;
     margin: 0;
-    color: var(--sesc-blue);
-    font-size: clamp(1.4rem, 5vw, 2rem);
-    line-height: 1.15;
+    color: #fff;
+    font-size: clamp(1.6rem, 6.4vw, 2.6rem);
+    font-weight: 900;
+    line-height: 1.05;
+    letter-spacing: -.015em;
+    text-wrap: balance;
+    text-shadow: 0 2px 18px rgba(0, 10, 40, .5);
 }
 
-.vp-publico-topo .eyebrow {
-    margin: var(--esp-2) 0 0;
+/* --- Coluna ---------------------------------------------------------------- */
+.vp-publico {
+    display: grid;
+    gap: 14px;
+    width: min(600px, 100%);
+    margin: 0 auto;
+    padding: 8px 16px 40px;
 }
 
-.vp-instrucao,
-.vp-aviso {
+.vp-progresso {
+    display: grid;
+    gap: 8px;
+    padding: 4px 2px 10px;
+}
+
+.vp-progresso p {
     margin: 0;
-    padding: var(--esp-3) var(--esp-4);
-    border-radius: var(--ui-raio, 8px);
-    color: var(--sesc-blue);
-    background: #eaf3ff;
+    color: var(--vp-texto);
     font-weight: 600;
+}
+
+.vp-progresso strong {
+    color: var(--vp-foco);
+}
+
+.vp-progresso small {
+    color: var(--vp-suave);
+}
+
+.vp-barra {
+    height: 6px;
+    border-radius: 999px;
+    background: var(--vp-borda);
+    overflow: hidden;
+}
+
+.vp-barra span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--vp-foco);
+}
+
+.vp-aviso {
+    display: grid;
+    gap: 4px;
+    margin-top: 12px;
+    padding: 22px 20px;
+    border: 1px solid var(--vp-borda);
+    border-radius: 18px;
+    color: var(--vp-suave);
+    background: var(--vp-cartao);
     text-align: center;
 }
 
+.vp-aviso strong {
+    color: var(--vp-texto);
+    font-size: 1.1rem;
+}
+
+/* --- Cartão do participante ----------------------------------------------- */
 .vp-card {
     display: grid;
-    gap: var(--esp-3);
-    padding: var(--esp-4);
-    border: 1px solid #dfe5f0;
-    border-radius: var(--ui-raio-g, 14px);
-    background: #fff;
-    box-shadow: 0 6px 20px rgba(0, 40, 120, .06);
-    scroll-margin-top: 80px;
-}
-
-.vp-card.votado {
-    background: #f4fbf6;
-    border-color: #b9e2c6;
+    gap: 18px;
+    padding: 18px 18px 20px;
+    border: 1px solid var(--vp-borda);
+    border-radius: 20px;
+    background: var(--vp-cartao);
+    scroll-margin-top: 16px;
 }
 
 .vp-card-topo {
     display: flex;
     align-items: center;
-    gap: var(--esp-3);
+    gap: 14px;
 }
 
-.vp-card-topo h2 {
-    margin: 0;
-    color: var(--sesc-text);
-    font-size: var(--t-lg);
-}
-
-.vp-card-topo small {
-    color: var(--sesc-muted);
-}
-
+/* A ordem de apresentação é o que a plateia ouve no microfone: "agora, a
+   número 3". Por isso ela é grande e vem antes do nome. */
 .vp-ordem {
+    flex: 0 0 auto;
+    color: var(--vp-foco);
+    font-size: 1.9rem;
+    font-weight: 900;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    letter-spacing: -.02em;
+}
+
+.vp-quem {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.vp-quem h2 {
+    margin: 0;
+    color: var(--vp-texto);
+    font-size: 1.2rem;
+    font-weight: 800;
+    line-height: 1.2;
+}
+
+.vp-musica {
+    margin: 2px 0 0;
+    color: var(--vp-suave);
+    font-size: .92rem;
+}
+
+/* Já votado: o cartão encolhe e apaga — o que falta votar é o que importa. */
+.vp-card.votado {
+    gap: 6px;
+    padding-block: 14px;
+    border-color: transparent;
+    background: rgba(10, 42, 110, .45);
+}
+
+.vp-card.votado .vp-ordem {
+    color: var(--vp-suave);
+    font-size: 1.4rem;
+}
+
+.vp-card.votado .vp-quem h2 {
+    font-size: 1.05rem;
+    color: var(--vp-suave);
+}
+
+.vp-check {
     display: grid;
     place-items: center;
     flex: 0 0 auto;
-    width: 44px;
-    height: 44px;
+    width: 32px;
+    height: 32px;
     border-radius: 50%;
-    color: #fff;
-    background: var(--sesc-blue);
-    font-weight: 800;
+    color: var(--vp-noite);
+    background: var(--vp-ok);
+    font-weight: 900;
 }
 
 .vp-registrado {
     margin: 0;
-    color: #1d7a3e;
-    font-weight: 800;
+    color: var(--vp-ok);
+    font-size: .9rem;
+    font-weight: 700;
 }
 
+/* --- Critério e notas ------------------------------------------------------ */
 .vp-form {
     display: grid;
-    gap: var(--esp-3);
+    gap: 18px;
 }
 
 .vp-criterio {
     display: grid;
-    gap: var(--esp-2);
+    gap: 10px;
     margin: 0;
     padding: 0;
     border: 0;
 }
 
 .vp-criterio legend {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 4px 12px;
+    width: 100%;
+    margin-bottom: 10px;
     padding: 0;
-    color: var(--sesc-text);
+}
+
+.vp-criterio legend span {
+    color: var(--vp-texto);
     font-weight: 700;
 }
 
 .vp-criterio legend small {
-    margin-left: var(--esp-1);
-    color: var(--sesc-muted);
-    font-weight: 400;
+    color: var(--vp-suave);
+    font-size: .85rem;
 }
 
 .vp-desc {
-    margin: 0;
-    color: var(--sesc-muted);
-    font-size: var(--t-sm);
+    margin: -4px 0 2px;
+    color: var(--vp-suave);
+    font-size: .92rem;
 }
 
+/* De 0 a 10 são onze notas: numa fileira só elas ficam pequenas demais para
+   o polegar, então quebram em duas, com a mesma largura. */
 .vp-opcoes {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(44px, 1fr));
-    gap: 6px;
+    grid-template-columns: repeat(var(--vp-col-m, 6), minmax(0, 1fr));
+    gap: 8px;
+}
+
+@media (min-width: 520px) {
+    .vp-opcoes {
+        grid-template-columns: repeat(var(--vp-col, 11), minmax(0, 1fr));
+        gap: 6px;
+    }
 }
 
 .vp-opcoes label {
+    position: relative;
     display: block;
     cursor: pointer;
 }
 
 .vp-opcoes input {
     position: absolute;
+    inset: 0;
     opacity: 0;
-    pointer-events: none;
+    margin: 0;
 }
 
 .vp-opcoes span {
     display: grid;
     place-items: center;
-    height: 44px;
-    border: 1px solid #cfd8e8;
-    border-radius: 10px;
-    color: var(--sesc-blue);
-    background: #fff;
+    height: 48px;
+    border: 1px solid var(--vp-borda);
+    border-radius: 12px;
+    color: var(--vp-texto);
+    background: rgba(255, 255, 255, .04);
+    font-size: 1.05rem;
     font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    transition: background-color .15s ease, color .15s ease, transform .15s ease, box-shadow .15s ease;
 }
 
+.vp-opcoes label:hover span {
+    border-color: var(--vp-suave);
+}
+
+/* O foco: a nota escolhida acende. */
 .vp-opcoes input:checked + span {
-    border-color: var(--sesc-blue);
-    color: #fff;
-    background: var(--sesc-blue);
+    border-color: var(--vp-foco);
+    color: var(--vp-noite);
+    background: var(--vp-foco);
+    box-shadow: 0 0 0 4px rgba(255, 196, 0, .22), 0 6px 18px rgba(255, 196, 0, .28);
+    transform: scale(1.06);
 }
 
 .vp-opcoes input:focus-visible + span {
-    outline: 3px solid var(--sesc-yellow);
+    outline: 3px solid #fff;
     outline-offset: 2px;
 }
 
 .vp-numero {
-    max-width: 180px;
-    font-size: 1.2rem;
+    width: 100%;
+    max-width: 220px;
+    height: 52px;
+    padding: 0 16px;
+    border: 1px solid var(--vp-borda);
+    border-radius: 12px;
+    color: var(--vp-texto);
+    background: rgba(255, 255, 255, .06);
+    font-size: 1.3rem;
+    font-weight: 800;
 }
 
+.vp-numero::placeholder {
+    color: var(--vp-suave);
+    font-weight: 600;
+}
+
+.vp-numero:focus {
+    border-color: var(--vp-foco);
+    outline: none;
+    box-shadow: 0 0 0 4px rgba(255, 196, 0, .22);
+}
+
+/* O botão só "acende" quando todas as notas estão escolhidas. Antes disso
+   fica apagado — mas clicável: se o JavaScript falhar, o navegador ainda
+   avisa o que falta pelo required dos campos. */
 .vp-enviar {
     width: 100%;
-    min-height: 48px;
+    min-height: 54px;
+    border: 0;
+    border-radius: 14px;
+    color: var(--vp-noite);
+    background: var(--vp-foco);
+    font: inherit;
+    font-size: 1.05rem;
+    font-weight: 900;
+    cursor: pointer;
+    transition: background-color .15s ease, color .15s ease;
 }
 
-.page-votar .button.primary {
-    border-color: var(--sesc-blue);
+.vp-enviar.incompleto {
+    color: var(--vp-suave);
+    background: rgba(255, 255, 255, .08);
+}
+
+.vp-enviar:focus-visible {
+    outline: 3px solid #fff;
+    outline-offset: 3px;
+}
+
+/* --- Rodapé ---------------------------------------------------------------- */
+.vp-rodape {
+    display: grid;
+    justify-items: center;
+    gap: 10px;
+    padding: 24px 16px 40px;
+    color: var(--vp-suave);
+    text-align: center;
+}
+
+.vp-rodape .sesc-logo.small {
     color: #fff;
-    background: var(--sesc-blue);
+    font-size: 34px;
+    opacity: .8;
+}
+
+.vp-rodape .sesc-logo.small::before {
+    border-top-width: 6px;
+}
+
+.vp-hero-logo.sesc-logo.small {
+    font-size: 54px;
+}
+
+.vp-hero-logo.sesc-logo.small::before {
+    border-top-width: 9px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .vp-opcoes span,
+    .vp-enviar {
+        transition: none;
+    }
+
+    .vp-opcoes input:checked + span {
+        transform: none;
+    }
+
+    .page-votar .flash {
+        animation: none;
+    }
+}
+
+/* --- Painel do administrador: imagem de capa ------------------------------- */
+.vp-capa-painel {
+    display: grid;
+    gap: var(--esp-2);
+    margin-top: var(--esp-4);
+    padding-top: var(--esp-4);
+    border-top: 1px solid #e5e9f1;
+}
+
+.vp-capa-painel h3 {
+    margin: 0;
+    color: var(--sesc-blue);
+}
+
+.vp-capa-painel p {
+    margin: 0;
+    font-size: var(--t-sm);
+}
+
+.vp-capa-previa {
+    width: 100%;
+    max-height: 200px;
+    border-radius: 10px;
+    object-fit: cover;
+}
+
+.vp-capa-form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--esp-2);
+    align-items: center;
+}
+
+.vp-capa-form input[type="file"] {
+    flex: 1 1 220px;
+    min-width: 0;
+}
+
+.vp-novo-link {
+    margin-top: var(--esp-2);
 }
 
 /* Pontos por colocação no voto do público */

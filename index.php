@@ -2694,7 +2694,7 @@ function handle_post(): void
     }
 
     /* Configuração da votação do público, no painel do administrador. */
-    if (in_array($action, ['vp_config', 'vp_novo_link', 'vp_criterio_salvar', 'vp_criterio_excluir', 'vp_zerar'], true)) {
+    if (in_array($action, ['vp_config', 'vp_novo_link', 'vp_criterio_salvar', 'vp_criterio_excluir', 'vp_zerar', 'vp_capa_enviar', 'vp_capa_remover'], true)) {
         require_admin();
         $eventId = (int)($_POST['event_id'] ?? 0);
         $voltar = ['event_id' => $eventId, 'section' => 'voto-publico'];
@@ -2772,6 +2772,16 @@ function handle_post(): void
         if ($action === 'vp_criterio_excluir') {
             $ok = vp_criterio_excluir($eventId, (int)($_POST['criterio_id'] ?? 0));
             flash($ok ? 'Critério do público excluído, com as notas dadas nele.' : 'Falha ao excluir.', $ok ? 'success' : 'error');
+        }
+
+        if ($action === 'vp_capa_enviar') {
+            $erro = vp_capa_salvar($eventId, 'capa');
+            flash($erro ?? 'Imagem de capa atualizada.', $erro === null ? 'success' : 'error');
+        }
+
+        if ($action === 'vp_capa_remover') {
+            vp_capa_remover($eventId);
+            flash('Imagem de capa removida.');
         }
 
         if ($action === 'vp_zerar') {
@@ -7415,12 +7425,34 @@ function render_dashboard(): void
                             <?php endif; ?>
                             <?= (int)$vpTotalVotos ?> voto(s) até agora.
                         </p>
-                        <form method="post" onsubmit="return confirm('Gerar um link novo?\n\nO link atual para de funcionar — quem estiver com ele aberto não consegue mais votar.');">
+                        <form method="post" class="vp-novo-link" onsubmit="return confirm('Gerar um link novo?\n\nO link atual para de funcionar — quem estiver com ele aberto não consegue mais votar.');">
                             <input type="hidden" name="action" value="vp_novo_link">
                             <input type="hidden" name="event_id" value="<?= $eventId ?>">
                             <button class="button ghost small" type="submit">Gerar novo link</button>
                         </form>
                     <?php endif; ?>
+
+                    <?php $vpCapa = vp_capa_url($eventId); ?>
+                    <div class="vp-capa-painel">
+                        <h3>Imagem de capa</h3>
+                        <p class="muted">Aparece no topo da página de votação, atrás do nome do evento. Use uma arte horizontal, de preferência 1600 × 900 px (JPG, PNG ou WEBP, até 8 MB).</p>
+                        <?php if ($vpCapa !== null): ?>
+                            <img class="vp-capa-previa" src="<?= h($vpCapa) ?>" alt="Capa atual da votação">
+                        <?php endif; ?>
+                        <form method="post" enctype="multipart/form-data" class="vp-capa-form">
+                            <input type="hidden" name="action" value="vp_capa_enviar">
+                            <input type="hidden" name="event_id" value="<?= $eventId ?>">
+                            <input type="file" name="capa" accept="image/jpeg,image/png,image/webp" required>
+                            <button class="button primary small" type="submit"><?= $vpCapa !== null ? 'Trocar imagem' : 'Enviar imagem' ?></button>
+                        </form>
+                        <?php if ($vpCapa !== null): ?>
+                            <form method="post" onsubmit="return confirm('Remover a imagem de capa da votação?');">
+                                <input type="hidden" name="action" value="vp_capa_remover">
+                                <input type="hidden" name="event_id" value="<?= $eventId ?>">
+                                <button class="button ghost small danger" type="submit">Remover imagem</button>
+                            </form>
+                        <?php endif; ?>
+                    </div>
                 </div>
             </section>
 
@@ -9551,80 +9583,123 @@ function render_votacao_publica(): void
         ))
         : [];
     $votados = $aberta ? vp_ja_votados($eventId, vp_dispositivo(), vp_hash_ip($eventId, ip_visitante())) : [];
+    $capa = $eventId !== null ? vp_capa_url($eventId) : null;
+    $total = count($participantes);
+    $feitos = count(array_intersect_key($votados, array_flip(array_map(static fn($p) => (int)$p['id'], $participantes))));
 
     render_header('Votação do público');
     ?>
-    <section class="vp-publico">
-        <header class="vp-publico-topo">
-            <div class="sesc-logo small"><span>Sesc</span></div>
-            <p class="eyebrow">Votação do público</p>
-            <h1><?= h($event['name'] ?? 'Votação') ?></h1>
+    <div class="vp-palco">
+        <header class="vp-hero<?= $capa !== null ? ' com-capa' : '' ?>">
+            <?php if ($capa !== null): ?>
+                <img class="vp-hero-capa" src="<?= h($capa) ?>" alt="">
+            <?php else: ?>
+                <div class="sesc-logo small vp-hero-logo"><span>Sesc</span></div>
+            <?php endif; ?>
+            <div class="vp-hero-texto">
+                <span class="vp-selo">Votação do público</span>
+                <h1><?= h($event['name'] ?? 'Votação do público') ?></h1>
+            </div>
         </header>
 
-        <?php if ($event === null): ?>
-            <div class="vp-aviso">Este link de votação não existe ou foi trocado pela organização. Peça o link atualizado.</div>
-        <?php elseif (!$aberta): ?>
-            <div class="vp-aviso">A votação do público está encerrada no momento. Obrigado pela participação!</div>
-        <?php elseif (!$criterios || !$participantes): ?>
-            <div class="vp-aviso">A votação ainda está sendo preparada. Volte daqui a pouco.</div>
-        <?php else: ?>
-            <p class="vp-instrucao">Dê sua nota para cada apresentação. É um voto por participante neste aparelho — confira antes de enviar.</p>
+        <div class="vp-publico">
+            <?php if ($event === null): ?>
+                <div class="vp-aviso">
+                    <strong>Este link não está mais valendo.</strong>
+                    Peça o link atualizado à organização do festival.
+                </div>
+            <?php elseif (!$aberta): ?>
+                <div class="vp-aviso">
+                    <strong>A votação está fechada agora.</strong>
+                    Obrigado por participar — o resultado sai no fim do evento.
+                </div>
+            <?php elseif (!$criterios || !$participantes): ?>
+                <div class="vp-aviso">
+                    <strong>A votação ainda está sendo preparada.</strong>
+                    Recarregue a página daqui a pouco.
+                </div>
+            <?php else: ?>
+                <section class="vp-progresso" aria-label="Seu progresso">
+                    <p><?= $feitos === $total
+                        ? 'Você votou em todas as apresentações. Obrigado!'
+                        : 'Você votou em <strong>' . $feitos . '</strong> de ' . $total . ' apresentações' ?></p>
+                    <div class="vp-barra" role="progressbar" aria-valuemin="0" aria-valuemax="<?= $total ?>" aria-valuenow="<?= $feitos ?>">
+                        <span style="width: <?= $total > 0 ? round($feitos / $total * 100) : 0 ?>%"></span>
+                    </div>
+                    <?php if ($feitos < $total): ?>
+                        <small>Um voto por apresentação neste celular. Depois de confirmar, não dá para mudar.</small>
+                    <?php endif; ?>
+                </section>
 
-            <?php foreach ($participantes as $p): ?>
-                <?php $pid = (int)$p['id']; $jaVotou = isset($votados[$pid]); ?>
-                <article class="vp-card<?= $jaVotou ? ' votado' : '' ?>" id="participante-<?= $pid ?>">
-                    <div class="vp-card-topo">
-                        <span class="vp-ordem"><?= str_pad((string)(int)($p['order'] ?? 0), 2, '0', STR_PAD_LEFT) ?></span>
-                        <div>
-                            <h2><?= h($p['name']) ?></h2>
-                            <?php if (($p['song'] ?? '') !== '' || ($p['category'] ?? '') !== ''): ?>
-                                <small><?= h(trim(($p['song'] ?? '') . ((($p['song'] ?? '') !== '' && ($p['category'] ?? '') !== '') ? ' · ' : '') . ($p['category'] ?? ''))) ?></small>
+                <?php foreach ($participantes as $p): ?>
+                    <?php
+                    $pid = (int)$p['id'];
+                    $jaVotou = isset($votados[$pid]);
+                    $ordem = str_pad((string)(int)($p['order'] ?? 0), 2, '0', STR_PAD_LEFT);
+                    ?>
+                    <article class="vp-card<?= $jaVotou ? ' votado' : '' ?>" id="participante-<?= $pid ?>">
+                        <div class="vp-card-topo">
+                            <span class="vp-ordem" title="Ordem de apresentação"><?= $ordem ?></span>
+                            <div class="vp-quem">
+                                <h2><?= h($p['name']) ?></h2>
+                                <?php if (($p['song'] ?? '') !== ''): ?><p class="vp-musica"><?= h($p['song']) ?></p><?php endif; ?>
+                            </div>
+                            <?php if ($jaVotou): ?>
+                                <span class="vp-check" aria-label="Voto registrado">✓</span>
                             <?php endif; ?>
                         </div>
-                    </div>
 
-                    <?php if ($jaVotou): ?>
-                        <p class="vp-registrado">✓ Seu voto foi registrado</p>
-                    <?php else: ?>
-                        <form method="post" class="vp-form">
-                            <input type="hidden" name="action" value="voto_publico">
-                            <input type="hidden" name="t" value="<?= h($token) ?>">
-                            <input type="hidden" name="participant_id" value="<?= $pid ?>">
-                            <?php foreach ($criterios as $c): ?>
-                                <?php
-                                $opcoes = (int)round(($c['nota_maxima'] - $c['nota_minima']) / $c['passo']) + 1;
-                                $comBotoes = $opcoes <= 11;
-                                $casas = $c['passo'] < 1 ? 1 : 0;
-                                ?>
-                                <fieldset class="vp-criterio">
-                                    <legend><?= h($c['nome']) ?> <small><?= h(numero_pt($c['nota_minima'])) ?> a <?= h(numero_pt($c['nota_maxima'])) ?></small></legend>
-                                    <?php if ($c['descricao'] !== ''): ?><p class="vp-desc"><?= h($c['descricao']) ?></p><?php endif; ?>
-                                    <?php if ($comBotoes): ?>
-                                        <div class="vp-opcoes">
-                                            <?php for ($i = 0; $i < $opcoes; $i++): ?>
-                                                <?php $valor = $c['nota_minima'] + $i * $c['passo']; ?>
-                                                <label>
-                                                    <input type="radio" required name="notas[<?= $c['id'] ?>]" value="<?= h(number_format($valor, $casas, '.', '')) ?>">
-                                                    <span><?= h(number_format($valor, $casas, ',', '.')) ?></span>
-                                                </label>
-                                            <?php endfor; ?>
-                                        </div>
-                                    <?php else: ?>
-                                        <input class="vp-numero" type="number" required inputmode="decimal"
-                                               name="notas[<?= $c['id'] ?>]"
-                                               min="<?= h(numero_campo($c['nota_minima'])) ?>" max="<?= h(numero_campo($c['nota_maxima'])) ?>"
-                                               step="<?= h(numero_campo($c['passo'])) ?>"
-                                               placeholder="<?= h(numero_pt($c['nota_minima'])) ?> a <?= h(numero_pt($c['nota_maxima'])) ?>">
-                                    <?php endif; ?>
-                                </fieldset>
-                            <?php endforeach; ?>
-                            <button class="button primary vp-enviar" type="submit">Votar em <?= h($p['name']) ?></button>
-                        </form>
-                    <?php endif; ?>
-                </article>
-            <?php endforeach; ?>
-        <?php endif; ?>
-    </section>
+                        <?php if ($jaVotou): ?>
+                            <p class="vp-registrado">Voto registrado</p>
+                        <?php else: ?>
+                            <form method="post" class="vp-form" data-vp-form>
+                                <input type="hidden" name="action" value="voto_publico">
+                                <input type="hidden" name="t" value="<?= h($token) ?>">
+                                <input type="hidden" name="participant_id" value="<?= $pid ?>">
+                                <?php foreach ($criterios as $c): ?>
+                                    <?php
+                                    $opcoes = (int)round(($c['nota_maxima'] - $c['nota_minima']) / $c['passo']) + 1;
+                                    $comBotoes = $opcoes <= 11;
+                                    $casas = $c['passo'] < 1 ? 1 : 0;
+                                    ?>
+                                    <fieldset class="vp-criterio">
+                                        <legend>
+                                            <span><?= h($c['nome']) ?></span>
+                                            <small>de <?= h(numero_pt($c['nota_minima'])) ?> a <?= h(numero_pt($c['nota_maxima'])) ?></small>
+                                        </legend>
+                                        <?php if ($c['descricao'] !== ''): ?><p class="vp-desc"><?= h($c['descricao']) ?></p><?php endif; ?>
+                                        <?php if ($comBotoes): ?>
+                                            <div class="vp-opcoes" style="--vp-col: <?= $opcoes ?>; --vp-col-m: <?= $opcoes <= 6 ? $opcoes : (int)ceil($opcoes / 2) ?>">
+                                                <?php for ($i = 0; $i < $opcoes; $i++): ?>
+                                                    <?php $valor = $c['nota_minima'] + $i * $c['passo']; ?>
+                                                    <label>
+                                                        <input type="radio" required name="notas[<?= $c['id'] ?>]" value="<?= h(number_format($valor, $casas, '.', '')) ?>">
+                                                        <span><?= h(number_format($valor, $casas, ',', '.')) ?></span>
+                                                    </label>
+                                                <?php endfor; ?>
+                                            </div>
+                                        <?php else: ?>
+                                            <input class="vp-numero" type="number" required inputmode="decimal"
+                                                   name="notas[<?= $c['id'] ?>]"
+                                                   min="<?= h(numero_campo($c['nota_minima'])) ?>" max="<?= h(numero_campo($c['nota_maxima'])) ?>"
+                                                   step="<?= h(numero_campo($c['passo'])) ?>"
+                                                   placeholder="Sua nota">
+                                        <?php endif; ?>
+                                    </fieldset>
+                                <?php endforeach; ?>
+                                <button class="vp-enviar" type="submit" data-vp-enviar>Confirmar voto</button>
+                            </form>
+                        <?php endif; ?>
+                    </article>
+                <?php endforeach; ?>
+            <?php endif; ?>
+        </div>
+
+        <footer class="vp-rodape">
+            <div class="sesc-logo small"><span>Sesc</span></div>
+            <small>Sistema de Notas de Jurados — Sesc Amazonas</small>
+        </footer>
+    </div>
     <?php
     render_footer();
 }

@@ -896,3 +896,110 @@ function vp_resultado(int $eventId): array
         return $saida;
     });
 }
+
+/* ===========================================================================
+ * IMAGEM DE CAPA DA VOTAÇÃO
+ *
+ * Uma imagem por evento, no topo da página do público. Fica como arquivo em
+ * public/uploads/votacao/ — pasta que a publicação automática não toca e o
+ * festival-backup já copia — com nome fixo por evento. Por isso não precisa
+ * de coluna no banco: o arquivo existir é a configuração.
+ * ======================================================================== */
+
+const VP_CAPA_DIR = __DIR__ . '/../public/uploads/votacao';
+const VP_CAPA_LARGURA_MAX = 1800;
+const VP_CAPA_TIPOS = [IMAGETYPE_JPEG => 'jpg', IMAGETYPE_PNG => 'png', IMAGETYPE_WEBP => 'webp'];
+
+/** Caminho relativo da capa do evento (com ?v= para trocar sem cache), ou null. */
+function vp_capa_url(int $eventId): ?string
+{
+    foreach (VP_CAPA_TIPOS as $ext) {
+        $arquivo = VP_CAPA_DIR . '/capa-evento-' . $eventId . '.' . $ext;
+        if (is_file($arquivo)) {
+            return 'public/uploads/votacao/capa-evento-' . $eventId . '.' . $ext . '?v=' . filemtime($arquivo);
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Grava a capa enviada no campo $campo.
+ *
+ * O tipo vem do cabeçalho binário (getimagesize), nunca do nome do arquivo.
+ * A imagem é sempre regravada pelo GD: isso tira metadados (EXIF com GPS do
+ * celular de quem fotografou) e reduz imagens grandes para no máximo
+ * 1800 px de largura — quem abre o link está no 4G da plateia.
+ *
+ * @return string|null mensagem de erro, ou null se gravou
+ */
+function vp_capa_salvar(int $eventId, string $campo = 'capa'): ?string
+{
+    $f = $_FILES[$campo] ?? null;
+
+    if (!$f || ($f['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
+        return 'Escolha uma imagem.';
+    }
+    if (($f['error'] ?? 0) !== UPLOAD_ERR_OK || !is_uploaded_file($f['tmp_name'])) {
+        return 'O envio da imagem falhou. Tente de novo (até 8 MB).';
+    }
+    if (($f['size'] ?? 0) > 8 * 1024 * 1024) {
+        return 'A imagem passa de 8 MB. Reduza e envie de novo.';
+    }
+
+    $info = @getimagesize($f['tmp_name']);
+    if ($info === false || !isset(VP_CAPA_TIPOS[$info[2]])) {
+        return 'Envie uma imagem JPG, PNG ou WEBP.';
+    }
+
+    $origem = match ($info[2]) {
+        IMAGETYPE_JPEG => @imagecreatefromjpeg($f['tmp_name']),
+        IMAGETYPE_PNG  => @imagecreatefrompng($f['tmp_name']),
+        IMAGETYPE_WEBP => function_exists('imagecreatefromwebp') ? @imagecreatefromwebp($f['tmp_name']) : false,
+        default        => false,
+    };
+    if (!$origem) {
+        return 'Não foi possível ler a imagem. Tente salvar como JPG e envie de novo.';
+    }
+
+    [$largura, $altura] = [imagesx($origem), imagesy($origem)];
+    if ($largura > VP_CAPA_LARGURA_MAX) {
+        $novaAltura = (int)round($altura * VP_CAPA_LARGURA_MAX / $largura);
+        $reduzida = imagecreatetruecolor(VP_CAPA_LARGURA_MAX, $novaAltura);
+        imagealphablending($reduzida, false);
+        imagesavealpha($reduzida, true);
+        imagecopyresampled($reduzida, $origem, 0, 0, 0, 0, VP_CAPA_LARGURA_MAX, $novaAltura, $largura, $altura);
+        imagedestroy($origem);
+        $origem = $reduzida;
+    }
+
+    if (!is_dir(VP_CAPA_DIR)) {
+        mkdir(VP_CAPA_DIR, 0775, true);
+    }
+
+    // PNG continua PNG (pode ter transparência); o resto vira JPG.
+    $ext = $info[2] === IMAGETYPE_PNG ? 'png' : 'jpg';
+    $destino = VP_CAPA_DIR . '/capa-evento-' . $eventId . '.' . $ext;
+    $ok = $ext === 'png' ? imagepng($origem, $destino, 7) : imagejpeg($origem, $destino, 84);
+    imagedestroy($origem);
+
+    if (!$ok) {
+        return 'Não foi possível gravar a imagem no servidor.';
+    }
+    @chmod($destino, 0644);
+
+    foreach (VP_CAPA_TIPOS as $outra) {
+        if ($outra !== $ext) {
+            @unlink(VP_CAPA_DIR . '/capa-evento-' . $eventId . '.' . $outra);
+        }
+    }
+
+    return null;
+}
+
+function vp_capa_remover(int $eventId): void
+{
+    foreach (VP_CAPA_TIPOS as $ext) {
+        @unlink(VP_CAPA_DIR . '/capa-evento-' . $eventId . '.' . $ext);
+    }
+}

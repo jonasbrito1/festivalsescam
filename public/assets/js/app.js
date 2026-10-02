@@ -783,3 +783,32 @@ document.addEventListener('click', (event) => {
         avisar();
     }
 });
+
+/* Voto do público: o botão "Confirmar voto" acende quando todas as notas
+   daquele participante estão escolhidas. Só aparência — quem garante que
+   nada falta é o required dos campos e, depois, o servidor. */
+const vpAtualizarBotao = (form) => {
+    const botao = form.querySelector('[data-vp-enviar]');
+    if (!botao) {
+        return;
+    }
+    const grupos = new Set(Array.from(form.querySelectorAll('input[name^="notas["]')).map((campo) => campo.name));
+    const completo = Array.from(grupos).every((nome) => {
+        const campos = form.querySelectorAll(`input[name="${CSS.escape(nome)}"]`);
+        return Array.from(campos).some((campo) => (campo.type === 'radio' ? campo.checked : String(campo.value).trim() !== ''));
+    });
+    botao.classList.toggle('incompleto', !completo);
+};
+
+document.querySelectorAll('[data-vp-form]').forEach((form) => {
+    vpAtualizarBotao(form);
+    form.addEventListener('input', () => vpAtualizarBotao(form));
+    form.addEventListener('change', () => vpAtualizarBotao(form));
+    /* Um toque só: evita duas cédulas se a rede demorar e a pessoa insistir. */
+    form.addEventListener('submit', () => {
+        const botao = form.querySelector('[data-vp-enviar]');
+        if (botao) {
+            window.setTimeout(() => { botao.disabled = true; botao.textContent = 'Enviando…'; }, 0);
+        }
+    });
+});
