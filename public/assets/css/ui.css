@@ -4474,3 +4474,48 @@ td {
         grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 }
+
+/* ---------------------------------------------------------------------------
+   Marca oficial no alto da tela do jurado
+   ------------------------------------------------------------------------- */
+.judge-marca {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 10px 16px;
+    background: linear-gradient(90deg, #00247a, #002f8f 50%, #00247a);
+    border-bottom: 3px solid #ffc400;
+}
+
+.judge-marca img {
+    display: block;
+    width: auto;
+    height: 64px;
+}
+
+@media (max-width: 620px) {
+    .judge-marca {
+        padding: 8px 12px;
+    }
+
+    .judge-marca img {
+        height: 52px;
+    }
+}
+
+/* Ficha individual: a conta da nota final no rodapé da tabela. */
+.ficha-conta td {
+    background: #f6f8fc;
+    font-weight: 600;
+}
+
+.ficha-conta td:last-child {
+    text-align: right;
+    white-space: nowrap;
+}
+
+.ficha-conta-final td {
+    border-top: 2px solid var(--sesc-blue, #002f8f);
+    color: var(--sesc-blue, #002f8f);
+    font-size: 1.05em;
+}

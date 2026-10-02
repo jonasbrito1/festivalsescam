@@ -16,8 +16,8 @@
  *                   jurados — o cálculo de sempre, que os regulamentos do
  *                   Festival Folclórico pedem
  *
- *    Evento sem configuração continua em 'media': nenhum resultado já
- *    apurado muda sozinho. Evento criado daqui para frente nasce em 'soma'.
+ *    O padrão é 'soma', inclusive para evento sem configuração gravada.
+ *    'media' só vale onde o administrador escolher (regulamento que exija).
  *
  * 2. VOTAÇÃO DO PÚBLICO, opcional por evento, por um link aberto
  *    (?page=votar&t=...). Cada pessoa escolhe UM participante — cada escolha
@@ -79,7 +79,10 @@ const VP_APARENCIA_PADRAO = [
 function vp_config_padrao(): array
 {
     return [
-        'modo_calculo'          => 'media',
+        /* Soma é o padrão: notas dos jurados somadas, mais os pontos do
+           público. 'media' continua disponível por evento, para regulamento
+           que exija (Configurações do evento > Cálculo da nota). */
+        'modo_calculo'          => 'soma',
         'publico_ativo'         => false,
         'publico_aberto'        => false,
         'publico_token'         => null,
@@ -299,7 +302,7 @@ function vp_config(int $eventId): array
             }
 
             return [
-                'modo_calculo'          => isset(VP_MODOS_CALCULO[$r['modo_calculo']]) ? (string)$r['modo_calculo'] : 'media',
+                'modo_calculo'          => isset(VP_MODOS_CALCULO[$r['modo_calculo']]) ? (string)$r['modo_calculo'] : 'soma',
                 'publico_ativo'         => (bool)$r['publico_ativo'],
                 'publico_aberto'        => (bool)$r['publico_aberto'],
                 'publico_token'         => $r['publico_token'] !== null ? (string)$r['publico_token'] : null,
@@ -327,7 +330,7 @@ function vp_salvar_config(int $eventId, array $mudancas): bool
     $nova = array_intersect_key($mudancas, vp_config_padrao()) + vp_config($eventId);
 
     if (!isset(VP_MODOS_CALCULO[$nova['modo_calculo']])) {
-        $nova['modo_calculo'] = 'media';
+        $nova['modo_calculo'] = 'soma';
     }
     $nova['publico_pontos'] = vp_pontos_de_texto(vp_pontos_para_texto((array)$nova['publico_pontos']));
     $nova['publico_aparencia'] = vp_aparencia_normalizar($nova['publico_aparencia']);

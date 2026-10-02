@@ -1924,6 +1924,12 @@ function criterio_notas_fora_da_faixa(array $db, array $criterio): int
     return $fora;
 }
 
+/** O evento soma as notas (padrão) em vez de fazer média? */
+function apuracao_por_soma(int $eventId): bool
+{
+    return vp_config($eventId)['modo_calculo'] !== 'media';
+}
+
 function ranking_for_event(array $db, int $eventId): array
 {
     $participants = items_for_event($db['participants'] ?? [], $eventId);
@@ -2026,45 +2032,30 @@ function ranking_for_event(array $db, int $eventId): array
     return $ranking;
 }
 
+/**
+ * Classificação por somatória — usada em Relatórios, Exportar e no relatório
+ * geral do evento.
+ *
+ * Antes era uma conta à parte: somava as notas cruas, sem peso, sem público
+ * e sem penalidade, e podia dar uma ordem diferente da classificação oficial.
+ * Agora é a MESMA conta de ranking_for_event(): jurados (conforme o cálculo
+ * do evento) + pontos do público − penalidades.
+ */
 function total_scores_for_event(array $db, int $eventId): array
 {
-    $participants = items_for_event($db['participants'] ?? [], $eventId);
-    $criteria = items_for_event($db['criteria'] ?? [], $eventId);
-    $criteriaIds = array_map(fn($criterion) => (int)$criterion['id'], $criteria);
-    $votes = array_values(array_filter(
-        items_for_event($db['votes'] ?? [], $eventId),
-        fn($vote) => in_array((int)$vote['criterion_id'], $criteriaIds, true)
-    ));
-
     $rows = [];
-    foreach ($participants as $participant) {
-        $participantVotes = array_values(array_filter(
-            $votes,
-            fn($vote) => (int)$vote['participant_id'] === (int)$participant['id']
-        ));
-        $judgeIds = [];
-        $total = 0.0;
-        foreach ($participantVotes as $vote) {
-            $judgeIds[(int)$vote['judge_id']] = true;
-            $total += (float)$vote['score'];
-        }
-
+    foreach (ranking_for_event($db, $eventId) as $r) {
         $rows[] = [
-            'participant' => $participant,
-            'total_score' => $total,
-            'notes_count' => count($participantVotes),
-            'judge_count' => count($judgeIds),
+            'participant'     => $r['participant'],
+            'total_score'     => (float)$r['score'],
+            'pontos_jurados'  => (float)($r['pontos_jurados'] ?? $r['score']),
+            'pontos_publico'  => (float)($r['pontos_publico'] ?? 0),
+            'posicao_publico' => (int)($r['posicao_publico'] ?? 0),
+            'penalidade'      => (float)($r['penalidade'] ?? 0),
+            'notes_count'     => (int)$r['vote_count'],
+            'judge_count'     => (int)$r['judge_count'],
         ];
     }
-
-    usort($rows, function ($a, $b) {
-        $scoreCompare = $b['total_score'] <=> $a['total_score'];
-        if ($scoreCompare !== 0) {
-            return $scoreCompare;
-        }
-
-        return ((int)($a['participant']['order'] ?? 0)) <=> ((int)($b['participant']['order'] ?? 0));
-    });
 
     return $rows;
 }
@@ -2332,9 +2323,9 @@ function judge_progress_for_event(array $db, int $eventId): array
  * organização pede quando quer saber, por exemplo, qual grupo teve a melhor
  * torcida — independentemente de como foi a apresentação.
  *
- * Classifica pela MÉDIA dos jurados, como o ranking geral. Somar favoreceria
- * quem foi avaliado por mais gente, o que não é mérito; a soma aparece ao lado
- * porque é o número que a coordenação confere contra a folha de papel.
+ * Classifica pela SOMA das notas dos jurados no quesito, como a nota final.
+ * Só um evento configurado para média (Configurações > Cálculo da nota)
+ * classifica pela média.
  *
  * Penalidades não entram: elas descontam da nota GERAL do grupo (itens 3.5,
  * 4 parágrafo único e 7.3 na Batalha; seção 8 na Junina), e não de um quesito.
@@ -2343,6 +2334,7 @@ function judge_progress_for_event(array $db, int $eventId): array
  */
 function ranking_por_criterio(array $db, int $eventId, int $criterionId): array
 {
+    $porSoma = apuracao_por_soma($eventId);
     $participantes = ordenar_participantes(items_for_event($db['participants'] ?? [], $eventId));
 
     $notas = [];
@@ -2363,11 +2355,13 @@ function ranking_por_criterio(array $db, int $eventId, int $criterionId): array
             'media'       => $qtd > 0 ? $soma / $qtd : 0.0,
             'soma'        => (float)$soma,
             'jurados'     => $qtd,
+            // O que ordena: a soma dos jurados, salvo evento configurado para média.
+            'metrica'     => $porSoma ? (float)$soma : ($qtd > 0 ? $soma / $qtd : 0.0),
         ];
     }
 
     usort($linhas, static fn(array $a, array $b): int =>
-        ((float)$b['media'] <=> (float)$a['media'])
+        ((float)$b['metrica'] <=> (float)$a['metrica'])
         ?: strcmp((string)$a['participant']['name'], (string)$b['participant']['name']));
 
     /* Empate divide a posição: dois com 9,80 são os dois em 1º, e o seguinte é
@@ -2378,14 +2372,14 @@ function ranking_por_criterio(array $db, int $eventId, int $criterionId): array
     $anterior = null;
 
     foreach ($linhas as $i => $linha) {
-        if ($anterior !== null && abs((float)$linha['media'] - $anterior) < 0.005) {
+        if ($anterior !== null && abs((float)$linha['metrica'] - $anterior) < 0.005) {
             $iguais++;
         } else {
             $posicao += 1 + $iguais;
             $iguais = 0;
         }
 
-        $anterior = (float)$linha['media'];
+        $anterior = (float)$linha['metrica'];
         $linhas[$i]['posicao'] = $posicao;
     }
 
@@ -5104,8 +5098,8 @@ function render_secao_penalidades(array $db, int $eventId, array $participants, 
         <div class="panel">
             <div class="info-note">
                 <strong>O desconto sai da nota final.</strong>
-                A pontuação de cada equipe é a média dos jurados; a penalidade é subtraída
-                dela. Fica registrado quem aplicou e quando — é um desconto numa competição,
+                A pontuação de cada equipe é a dos jurados (mais o público, quando há votação
+                do público); a penalidade é subtraída dela. Fica registrado quem aplicou e quando — é um desconto numa competição,
                 e tem de haver a quem perguntar depois.
             </div>
         </div>
@@ -5189,14 +5183,14 @@ function render_secao_penalidades(array $db, int $eventId, array $participants, 
             <div class="table-wrap">
                 <table class="admin-table responsive-cards">
                     <thead>
-                        <tr><th>#</th><th>Equipe</th><th>Média dos jurados</th><th>Penalidades</th><th>Nota final</th></tr>
+                        <tr><th>#</th><th>Equipe</th><th><?= apuracao_por_soma((int)$eventId) ? 'Pontos (jurados + público)' : 'Média dos jurados' ?></th><th>Penalidades</th><th>Nota final</th></tr>
                     </thead>
                     <tbody>
                     <?php foreach ($ranking as $i => $linha): ?>
                         <tr class="<?= $i === 0 ? 'ser-campeao' : '' ?>">
                             <td data-label="#"><?= $i + 1 ?>º</td>
                             <td data-label="Equipe"><strong><?= h($linha['participant']['name']) ?></strong></td>
-                            <td data-label="Média dos jurados"><?= h(number_format((float)($linha['score_bruto'] ?? $linha['score']), 2, ',', '.')) ?></td>
+                            <td data-label="Antes do desconto"><?= h(number_format((float)($linha['score_bruto'] ?? $linha['score']), 2, ',', '.')) ?></td>
                             <td data-label="Penalidades">
                                 <?= ($linha['penalidade'] ?? 0) > 0
                                     ? '−' . h(numero_pt((float)$linha['penalidade']))
@@ -7859,19 +7853,19 @@ function render_dashboard(): void
                                 <h2><?= h($c['name']) ?></h2>
                                 <div class="table-wrap">
                                     <table class="admin-table responsive-cards">
-                                        <thead><tr><th>Posição</th><th>Participante</th><th>Média</th><th>Soma</th><th>Jurados</th></tr></thead>
+                                        <?php $porSomaRel = apuracao_por_soma($eventId); ?>
+                                        <thead><tr><th>Posição</th><th>Participante</th><th><?= $porSomaRel ? 'Total (soma dos jurados)' : 'Média' ?></th><th>Jurados</th></tr></thead>
                                         <tbody>
                                         <?php foreach ($linhas as $l): ?>
                                             <tr>
                                                 <td data-label="Posição"><?= (int)$l['posicao'] ?>º</td>
                                                 <td data-label="Participante"><?= h($l['participant']['name']) ?></td>
-                                                <td data-label="Média"><?= $l['jurados'] > 0 ? number_format((float)$l['media'], 2, ',', '.') : '-' ?></td>
-                                                <td data-label="Soma"><?= $l['jurados'] > 0 ? number_format((float)$l['soma'], 2, ',', '.') : '-' ?></td>
+                                                <td data-label="<?= $porSomaRel ? 'Total' : 'Média' ?>"><strong><?= $l['jurados'] > 0 ? number_format((float)$l['metrica'], 2, ',', '.') : '-' ?></strong></td>
                                                 <td data-label="Jurados"><?= (int)$l['jurados'] ?></td>
                                             </tr>
                                         <?php endforeach; ?>
                                         <?php if (!$linhas): ?>
-                                            <tr><td colspan="5">Nenhum participante cadastrado neste evento.</td></tr>
+                                            <tr><td colspan="4">Nenhum participante cadastrado neste evento.</td></tr>
                                         <?php endif; ?>
                                         </tbody>
                                     </table>
@@ -7879,9 +7873,12 @@ function render_dashboard(): void
                             </section>
                         <?php endforeach; ?>
                         <p class="dica">
-                            Classificação pela <strong>média dos jurados</strong>; somar favoreceria quem
-                            foi avaliado por mais gente. A soma fica ao lado para conferência com a folha
-                            de papel. Penalidades não entram no quesito: descontam da nota geral do grupo.
+                            <?php if (apuracao_por_soma($eventId)): ?>
+                                Classificação pela <strong>soma das notas dos jurados</strong> no quesito.
+                            <?php else: ?>
+                                Classificação pela <strong>média dos jurados</strong>, como este evento está configurado.
+                            <?php endif; ?>
+                            Os pontos do público e as penalidades não entram no quesito: contam na nota final do participante.
                         </p>
 
                     <?php /* ---------- FICHA INDIVIDUAL ---------- */ ?>
@@ -7920,14 +7917,15 @@ function render_dashboard(): void
                                             <tr>
                                                 <th>Quesito</th>
                                                 <?php foreach ($ficha['jurados'] as $j): ?><th><?= h($j['name']) ?></th><?php endforeach; ?>
-                                                <th>Média</th>
+                                                <th><?= apuracao_por_soma($eventId) ? 'Total' : 'Média' ?></th>
                                             </tr>
                                         </thead>
                                         <tbody>
                                         <?php foreach ($ficha['criterios'] as $c): ?>
                                             <?php
                                             $doQuesito = $ficha['notas'][(int)$c['id']] ?? [];
-                                            $media = $doQuesito ? array_sum(array_map(static fn($v) => (float)$v['score'], $doQuesito)) / count($doQuesito) : null;
+                                            $somaQuesito = array_sum(array_map(static fn($v) => (float)$v['score'], $doQuesito));
+                                            $media = $doQuesito ? (apuracao_por_soma($eventId) ? $somaQuesito : $somaQuesito / count($doQuesito)) : null;
                                             ?>
                                             <tr>
                                                 <td><strong><?= h($c['name']) ?></strong></td>
@@ -7944,6 +7942,19 @@ function render_dashboard(): void
                                             </tr>
                                         <?php endforeach; ?>
                                         </tbody>
+                                        <?php if ($linhaRanking): ?>
+                                            <?php /* A conta da nota final, por extenso: jurados + público − penalidade. */ ?>
+                                            <tfoot class="ficha-conta">
+                                                <tr><td colspan="<?= count($ficha['jurados']) + 1 ?>">Pontos dos jurados</td><td><strong><?= number_format((float)$linhaRanking['pontos_jurados'], 2, ',', '.') ?></strong></td></tr>
+                                                <?php if (vp_publico_em_uso($eventId)): ?>
+                                                    <tr><td colspan="<?= count($ficha['jurados']) + 1 ?>">Pontos do público<?= !empty($linhaRanking['posicao_publico']) ? ' (' . (int)$linhaRanking['posicao_publico'] . 'º no voto do público, ' . (int)$linhaRanking['votos_publico'] . ' votos)' : '' ?></td><td><strong>+ <?= number_format((float)$linhaRanking['pontos_publico'], 2, ',', '.') ?></strong></td></tr>
+                                                <?php endif; ?>
+                                                <?php if ((float)$linhaRanking['penalidade'] > 0): ?>
+                                                    <tr><td colspan="<?= count($ficha['jurados']) + 1 ?>">Penalidades</td><td><strong>− <?= number_format((float)$linhaRanking['penalidade'], 2, ',', '.') ?></strong></td></tr>
+                                                <?php endif; ?>
+                                                <tr class="ficha-conta-final"><td colspan="<?= count($ficha['jurados']) + 1 ?>">Nota final</td><td><strong><?= number_format((float)$linhaRanking['score'], 2, ',', '.') ?></strong></td></tr>
+                                            </tfoot>
+                                        <?php endif; ?>
                                     </table>
                                 </div>
 
@@ -7994,14 +8005,14 @@ function render_dashboard(): void
                         <h2>Campeão de cada quesito</h2>
                         <div class="table-wrap">
                             <table class="admin-table">
-                                <thead><tr><th>Quesito</th><th>1º lugar</th><th>Média</th></tr></thead>
+                                <thead><tr><th>Quesito</th><th>1º lugar</th><th><?= apuracao_por_soma($eventId) ? 'Total' : 'Média' ?></th></tr></thead>
                                 <tbody>
                                 <?php foreach ($criteria as $c): ?>
                                     <?php $topo = ranking_por_criterio($db, $eventId, (int)$c['id'])[0] ?? null; ?>
                                     <tr>
                                         <td><strong><?= h($c['name']) ?></strong></td>
                                         <td><?= $topo && $topo['jurados'] > 0 ? h($topo['participant']['name']) : '—' ?></td>
-                                        <td><?= $topo && $topo['jurados'] > 0 ? number_format((float)$topo['media'], 2, ',', '.') : '—' ?></td>
+                                        <td><?= $topo && $topo['jurados'] > 0 ? number_format((float)$topo['metrica'], 2, ',', '.') : '—' ?></td>
                                     </tr>
                                 <?php endforeach; ?>
                                 </tbody>
@@ -8417,22 +8428,30 @@ function render_ranking_table(array $ranking): string
 
 function render_total_scores_table(array $rows): string
 {
+    /* Com votação do público, a nota final se abre em jurados + público. */
+    $primeira = $rows[0] ?? null;
+    $comPublico = $primeira !== null && vp_publico_em_uso((int)($primeira['participant']['event_id'] ?? 0));
+    $colunas = $comPublico ? 7 : 5;
     ob_start();
     ?>
     <div class="table-wrap">
         <table class="admin-table responsive-cards">
-            <thead><tr><th>#</th><th>Participante</th><th>Total de notas</th><th>Notas lancadas</th><th>Jurados</th></tr></thead>
+            <thead><tr><th>#</th><th>Participante</th><?php if ($comPublico): ?><th>Jurados</th><th>Público</th><?php endif; ?><th>Nota final</th><th>Notas lançadas</th><th>Nº de jurados</th></tr></thead>
             <tbody>
             <?php if (!$rows): ?>
-                <tr><td colspan="5">Sem notas totais ainda.</td></tr>
+                <tr><td colspan="<?= $colunas ?>">Sem notas totais ainda.</td></tr>
             <?php endif; ?>
             <?php foreach ($rows as $index => $row): ?>
                 <tr>
                     <td data-label="#"><?= $index + 1 ?></td>
                     <td data-label="Participante"><?= h($row['participant']['name']) ?></td>
-                    <td data-label="Total de notas"><?= number_format((float)$row['total_score'], 2, ',', '.') ?></td>
-                    <td data-label="Notas lancadas"><?= (int)$row['notes_count'] ?></td>
-                    <td data-label="Jurados"><?= (int)$row['judge_count'] ?></td>
+                    <?php if ($comPublico): ?>
+                        <td data-label="Jurados"><?= number_format((float)$row['pontos_jurados'], 2, ',', '.') ?></td>
+                        <td data-label="Público"><?= number_format((float)$row['pontos_publico'], 2, ',', '.') ?><?= $row['posicao_publico'] > 0 ? ' <small class="muted">(' . (int)$row['posicao_publico'] . 'º)</small>' : '' ?></td>
+                    <?php endif; ?>
+                    <td data-label="Nota final"><strong><?= number_format((float)$row['total_score'], 2, ',', '.') ?></strong></td>
+                    <td data-label="Notas lançadas"><?= (int)$row['notes_count'] ?></td>
+                    <td data-label="Nº de jurados"><?= (int)$row['judge_count'] ?></td>
                 </tr>
             <?php endforeach; ?>
             </tbody>
@@ -8697,6 +8716,15 @@ function render_judge_panel(): void
             </form>
         </aside>
         <section class="judge-content">
+            <?php /* Marca oficial Sesc / Fecomércio / Senac no alto de toda tela
+                     do jurado. O arquivo é branco com fundo transparente, por
+                     isso vai sobre a faixa azul. Fica fora do cabeçalho preso
+                     (sticky): rola junto, e no tablet o espaço da ficha não
+                     diminui enquanto o jurado avalia. */ ?>
+            <div class="judge-marca">
+                <img src="<?= asset('public/assets/img/marca-sesc-fecomercio-senac.png') ?>"
+                     alt="Sesc · Fecomércio · Senac" width="150" height="150">
+            </div>
             <header class="judge-event-head">
                 <?= menu_botao() ?>
                 <div>
@@ -9110,7 +9138,9 @@ function render_judge_panel(): void
                             <p><span><?= h($criterion['name']) ?></span><strong><?= isset($scores[(int)$criterion['id']]) ? number_format((float)$scores[(int)$criterion['id']], 1, ',', '.') : '-' ?><small> / <?= h(numero_pt((float)$regrasCriterioJ[(int)$criterion['id']]['nota_maxima'])) ?></small></strong></p>
                         <?php endforeach; ?>
                         <p class="summary-total"><span>Total</span><strong><?= number_format($scoreTotal, 1, ',', '.') ?><small> / <?= h(numero_pt($pontosPossiveis)) ?></small></strong></p>
-                        <p class="summary-average"><span>Média Geral</span><strong><?= number_format($scoreAverage, 1, ',', '.') ?></strong></p>
+                        <?php if (!$somaNoEvento): ?>
+                            <p class="summary-average"><span>Média Geral</span><strong><?= number_format($scoreAverage, 1, ',', '.') ?></strong></p>
+                        <?php endif; ?>
                     </aside>
                 </section>
             <?php endif; ?>

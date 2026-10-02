@@ -57,8 +57,7 @@ function relatorio_pdf_quesito(array $db, array $event, array $quesitos): string
     $colunas = pdf_colunas($doc, [
         ['rotulo' => 'Pos.',         'peso' => 0.8, 'alinhar' => 'direita'],
         ['rotulo' => 'Participante', 'peso' => 4.0],
-        ['rotulo' => 'Média',        'peso' => 1.2, 'alinhar' => 'direita'],
-        ['rotulo' => 'Soma',         'peso' => 1.2, 'alinhar' => 'direita'],
+        ['rotulo' => apuracao_por_soma((int)$event['id']) ? 'Total' : 'Média', 'peso' => 1.4, 'alinhar' => 'direita'],
         ['rotulo' => 'Jurados',      'peso' => 1.0, 'alinhar' => 'direita'],
     ]);
 
@@ -72,8 +71,7 @@ function relatorio_pdf_quesito(array $db, array $event, array $quesitos): string
                 'celulas' => [
                     (int)$l['posicao'] . 'º',
                     (string)$l['participant']['name'],
-                    $temNota ? relatorio_pdf_numero((float)$l['media']) : '-',
-                    $temNota ? relatorio_pdf_numero((float)$l['soma']) : '-',
+                    $temNota ? relatorio_pdf_numero((float)$l['metrica']) : '-',
                     (string)(int)$l['jurados'],
                 ],
                 // O primeiro lugar em destaque: é o que se procura na folha.
@@ -94,9 +92,10 @@ function relatorio_pdf_quesito(array $db, array $event, array $quesitos): string
 
     pdf_paragrafo(
         $doc,
-        'Classificacao pela media dos jurados; somar favoreceria quem foi avaliado por mais gente. '
-        . 'A soma fica ao lado para conferencia com a folha de papel. Penalidades nao entram no '
-        . 'quesito: descontam da nota geral do grupo.',
+        (apuracao_por_soma((int)$event['id'])
+            ? 'Classificacao pela soma das notas dos jurados no quesito. '
+            : 'Classificacao pela media dos jurados, como este evento esta configurado. ')
+        . 'Os pontos do publico e as penalidades nao entram no quesito: contam na nota final.',
         8.0
     );
 
@@ -167,7 +166,8 @@ function relatorio_pdf_participante(array $db, array $event, array $alvos): stri
             $legenda[] = $partes[0] . ' = ' . (string)$j['name'];
         }
 
-        $definicao[] = ['rotulo' => 'Média', 'peso' => 1.0, 'alinhar' => 'direita'];
+        $porSoma = apuracao_por_soma($eventId);
+        $definicao[] = ['rotulo' => $porSoma ? 'Total' : 'Média', 'peso' => 1.0, 'alinhar' => 'direita'];
         $colunas = pdf_colunas($doc, $definicao);
 
         $linhas = [];
@@ -180,15 +180,28 @@ function relatorio_pdf_participante(array $db, array $event, array $alvos): stri
                 $celulas[] = $voto ? relatorio_pdf_numero((float)$voto['score'], 1) : '-';
             }
 
-            $media = $doQuesito
-                ? array_sum(array_map(static fn($v): float => (float)$v['score'], $doQuesito)) / count($doQuesito)
-                : null;
+            $somaQuesito = array_sum(array_map(static fn($v): float => (float)$v['score'], $doQuesito));
+            $media = $doQuesito ? ($porSoma ? $somaQuesito : $somaQuesito / count($doQuesito)) : null;
 
             $celulas[] = relatorio_pdf_numero($media);
             $linhas[] = ['celulas' => $celulas];
         }
 
         pdf_tabela($doc, $colunas, $linhas, 8.5);
+
+        /* A conta da nota final, por extenso: jurados + público − penalidade. */
+        if ($linhaRanking) {
+            $conta = 'Pontos dos jurados ' . relatorio_pdf_numero((float)$linhaRanking['pontos_jurados']);
+            if (function_exists('vp_publico_em_uso') && vp_publico_em_uso($eventId)) {
+                $conta .= '   +   publico ' . relatorio_pdf_numero((float)$linhaRanking['pontos_publico'])
+                    . (!empty($linhaRanking['posicao_publico']) ? ' (' . (int)$linhaRanking['posicao_publico'] . 'o no voto do publico)' : '');
+            }
+            if ((float)$linhaRanking['penalidade'] > 0) {
+                $conta .= '   -   penalidade ' . relatorio_pdf_numero((float)$linhaRanking['penalidade']);
+            }
+            $conta .= '   =   nota final ' . relatorio_pdf_numero((float)$linhaRanking['score']);
+            pdf_paragrafo($doc, $conta, 9.0, [0, 47, 143]);
+        }
 
         if ($legenda !== []) {
             pdf_paragrafo($doc, implode('   ·   ', $legenda), 7.5);
@@ -337,14 +350,14 @@ function relatorio_pdf_evento(array $db, array $event): string
         $linhasQuesito[] = ['celulas' => [
             (string)$c['name'],
             $temNota ? (string)$topo['participant']['name'] : '-',
-            $temNota ? relatorio_pdf_numero((float)$topo['media']) : '-',
+            $temNota ? relatorio_pdf_numero((float)$topo['metrica']) : '-',
         ]];
     }
 
     pdf_tabela($doc, pdf_colunas($doc, [
         ['rotulo' => 'Quesito',  'peso' => 2.5],
         ['rotulo' => '1º lugar', 'peso' => 4.0],
-        ['rotulo' => 'Média',    'peso' => 1.2, 'alinhar' => 'direita'],
+        ['rotulo' => apuracao_por_soma($eventId) ? 'Total' : 'Média', 'peso' => 1.2, 'alinhar' => 'direita'],
     ]), $linhasQuesito);
 
     return pdf_finalizar($doc);
