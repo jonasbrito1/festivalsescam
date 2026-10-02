@@ -43,7 +43,14 @@ EXCLUIR=(
   --exclude=/public/assets/versao.txt
   --exclude=/node_modules/
   --exclude=/vendor/
-  --exclude=/mobile_capacitor/android/
+
+  # Estao no git, mas nao sao do site. Nunca estiveram no docroot: o script
+  # de migracao rodaria pelo navegador, mobile_pwa/ e outra aplicacao, e os
+  # scripts de deploy/ nao tem extensao que o nginx bloqueie.
+  --exclude=/deploy/
+  --exclude=/mobile_pwa/
+  --exclude=/mobile_capacitor/
+  --exclude=/migrate_json_to_sqlsrv.php
   --exclude=/.github/
   --exclude=/.githooks/
   --exclude=/.env

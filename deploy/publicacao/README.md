@@ -26,6 +26,7 @@ git push  ──►  GitHub (main)  ◄── servidor confere a cada minuto
 | `public/uploads/` | fotos de participantes e jurados |
 | `.env`, `config/.env` | senhas |
 | banco MySQL | migração em `sql/` é aplicada **à mão** |
+| `deploy/`, `mobile_pwa/`, `mobile_capacitor/`, `migrate_json_to_sqlsrv.php` | estão no git, mas não são do site — nunca vão para o docroot |
 
 Arquivo que existe no servidor e **não** existe no git é apagado — com exceção
 da lista acima. Correção feita direto no servidor precisa ir para o git, senão
